@@ -46,14 +46,24 @@ export interface PapyrsPage extends PapyrsPageSummary {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class PapyrsClient {
+  private siteBase: string;
   private base: string;
 
-  constructor(baseUrl: string, private token: string) {
-    this.base = baseUrl.replace(/\/+$/, "") + "/api/v1";
+  // Pages, search and feeds live inside a subsite, so their URLs need "/@<subsite>".
+  // The people directory is site-wide and stays at the site root.
+  constructor(baseUrl: string, private token: string, subsite = "") {
+    const root = baseUrl.replace(/\/+$/, "");
+    const sub = subsite.trim().replace(/^@/, "");
+    this.siteBase = root + "/api/v1";
+    this.base = (sub ? `${root}/@${encodeURIComponent(sub)}` : root) + "/api/v1";
   }
 
-  private async call<T>(method: "GET" | "POST", path: string, opts: { query?: Record<string, string>; body?: unknown } = {}): Promise<T> {
-    const url = new URL(this.base + path);
+  private async call<T>(
+    method: "GET" | "POST",
+    path: string,
+    opts: { query?: Record<string, string>; body?: unknown; siteWide?: boolean } = {},
+  ): Promise<T> {
+    const url = new URL((opts.siteWide ? this.siteBase : this.base) + path);
     url.searchParams.set("auth_token", this.token);
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v);
 
@@ -100,7 +110,7 @@ export class PapyrsClient {
     });
   }
   people() {
-    return this.call<PapyrsPerson[]>("GET", "/people/all/");
+    return this.call<PapyrsPerson[]>("GET", "/people/all/", { siteWide: true });
   }
   createPage(body: { title: string; json: unknown; category?: string; permissions?: Record<string, string>; notifications?: Record<string, string> }) {
     return this.call<PapyrsPage>("POST", "/pages/create/", { body });
