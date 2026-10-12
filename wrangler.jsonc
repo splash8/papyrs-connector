@@ -5,7 +5,7 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "PUBLIC_URL": "https://papyrs-connector.REPLACE.workers.dev",
+    "PUBLIC_URL": "https://papyrs-connector.sanja-ples.workers.dev",
     "PAPYRS_BASE_URL": "https://ch-aviation.papyrs.com",
     "DRAFT_FOLDER": "Claude drafts",
     "REVIEWER_IDS": "",
