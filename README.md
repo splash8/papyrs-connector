@@ -37,10 +37,10 @@ Requires Node 20+ and a free Cloudflare account.
 ```bash
 npm install
 npx wrangler login
-npx wrangler kv namespace create OAUTH_KV     # copy the id into wrangler.jsonc
-npx wrangler kv namespace create REVIEW_KV    # copy the id into wrangler.jsonc
 npx wrangler deploy                            # prints https://papyrs-connector.<subdomain>.workers.dev
 ```
+
+The `OAUTH_KV` and `REVIEW_KV` namespaces have no `id` in `wrangler.jsonc`, so the first deploy creates them automatically (this also works with Cloudflare Workers Builds from GitHub).
 
 Then set `PUBLIC_URL` in `wrangler.jsonc` to the printed URL and run `npx wrangler deploy` again.
 
