@@ -50,6 +50,7 @@ Settings in `wrangler.jsonc` → `vars`:
 |---|---|
 | `PUBLIC_URL` | The Worker's public URL (no trailing slash) |
 | `PAPYRS_BASE_URL` | `https://ch-aviation.papyrs.com` |
+| `PAPYRS_SUBSITE` | The subsite name from your Papyrs page addresses (the word after `papyrs.com/`). Without it, Papyrs answers "Please specify a target subsite" |
 | `DRAFT_FOLDER` | Folder for drafts, default `Claude drafts` |
 | `REVIEWER_IDS` | Optional, comma-separated Papyrs user IDs |
 | `ALLOWED_REDIRECT_HOSTS` | `claude.ai,claude.com`, so only Claude can use the sign-in page |

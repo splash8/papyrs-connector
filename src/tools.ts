@@ -16,6 +16,7 @@ export interface Env {
   OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
   PUBLIC_URL: string; // where this Worker is reachable, e.g. https://papyrs-connector.<you>.workers.dev
   PAPYRS_BASE_URL: string; // e.g. https://ch-aviation.papyrs.com
+  PAPYRS_SUBSITE: string; // subsite name from the Papyrs URL, e.g. "Intranet"
   DRAFT_FOLDER: string; // e.g. "Claude drafts"
   REVIEWER_IDS?: string; // optional comma-separated Papyrs user IDs who review every Claude change
   ALLOWED_REDIRECT_HOSTS?: string; // e.g. "claude.ai,claude.com"
@@ -59,7 +60,7 @@ const reviewersOf = (env: Env) =>
     .filter(Boolean);
 
 export function buildServer(env: Env, props: Props): McpServer {
-  const papyrs = new PapyrsClient(env.PAPYRS_BASE_URL, props.papyrsToken);
+  const papyrs = new PapyrsClient(env.PAPYRS_BASE_URL, props.papyrsToken, env.PAPYRS_SUBSITE);
   const draftFolder = env.DRAFT_FOLDER || "Claude drafts";
   const server = new McpServer(
     { name: "ch-aviation Papyrs", version: "1.0.0" },
