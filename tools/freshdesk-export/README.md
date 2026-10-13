@@ -1,18 +1,22 @@
 # Freshdesk conversation export
 
-Exports every ticket's full conversation to one CSV file: the original description, customer and agent replies, forwards, and public and private notes. You can skip tickets that belong to chosen groups. The script has no dependencies and needs Node 20+.
+Exports every ticket's full conversation to one CSV file: the original description, customer and agent replies, forwards, and public and private notes. You can skip tickets that belong to chosen groups.
 
 ## Run
 
-```bash
-export FRESHDESK_DOMAIN=yourcompany.freshdesk.com
-export FRESHDESK_API_KEY=xxxxxxxx      # Freshdesk → Profile settings → View API key
+There are two copies of the same script: `export.py` (Python 3.8+, no extra packages) and `export.mjs` (Node 20+). They take the same options and write the same CSV.
 
-node tools/freshdesk-export/export.mjs --list-groups          # show group IDs and names
-node tools/freshdesk-export/export.mjs \
-  --exclude-groups "Sales,HR" \
-  --out freshdesk-conversations.csv
+Windows PowerShell:
+
+```powershell
+$env:FRESHDESK_DOMAIN = "yourcompany.freshdesk.com"
+$env:FRESHDESK_API_KEY = "xxxxxxxx"      # Freshdesk → Profile settings → View API key
+
+python export.py --list-groups                       # show group IDs and names
+python export.py --exclude-groups "Sales,HR" --out freshdesk-conversations.csv
 ```
+
+Mac/Linux: set the variables with `export FRESHDESK_DOMAIN=…` and run `python3 export.py …`. With Node, run `node export.mjs …` instead.
 
 | Option | Meaning |
 |---|---|
