@@ -85,23 +85,36 @@ const defaultHandler = {
         // Validate the token and find this person's Papyrs user ID BEFORE consuming the handle,
         // so a typo just shows the form again.
         let person;
+        let limited = false;
         try {
           const people = await new PapyrsClient(env.PAPYRS_BASE_URL, token).people();
           person = people.find((p) => (p.attributes.Email ?? "").trim().toLowerCase() === email);
         } catch (e) {
-          // Show Papyrs' own reply too, so an admin can tell a bad token from missing People Directory access.
-          const msg = e instanceof PapyrsError && (e.status === 401 || e.status === 403 || e.status === 404)
-            ? `Papyrs did not accept this token (or it has no access to the People Directory). Papyrs replied ${e.status}: ${e.message}`
-            : e instanceof PapyrsError ? e.message : "Could not reach Papyrs. Try again in a minute.";
-          return retry(form, env, handle, msg, email);
+          // Limited Users can't open the People Directory. If the token still works for pages,
+          // connect them read-only instead of refusing.
+          if (e instanceof PapyrsError && (e.status === 401 || e.status === 403 || e.status === 404)) {
+            try {
+              await new PapyrsClient(env.PAPYRS_BASE_URL, token, env.PAPYRS_SUBSITE).allPages();
+              limited = true;
+            } catch {
+              /* the token doesn't work at all: fall through to the error below */
+            }
+          }
+          if (!limited) {
+            // Show Papyrs' own reply too, so an admin can see why the token was refused.
+            const msg = e instanceof PapyrsError && (e.status === 401 || e.status === 403 || e.status === 404)
+              ? `Papyrs did not accept this token. Papyrs replied ${e.status}: ${e.message}`
+              : e instanceof PapyrsError ? e.message : "Could not reach Papyrs. Try again in a minute.";
+            return retry(form, env, handle, msg, email);
+          }
         }
-        if (!person) return retry(form, env, handle, "No Papyrs user with that email. Use the email you sign in to Papyrs with.", email);
+        if (!person && !limited) return retry(form, env, handle, "No Papyrs user with that email. Use the email you sign in to Papyrs with.", email);
 
         const approved = await oauth.approveConsent(request, handle);
-        const props: Props = { papyrsToken: token, papyrsUserId: person.id, name: person.attributes.Name || email, email };
+        const props: Props = { papyrsToken: token, papyrsUserId: person?.id ?? "", name: person?.attributes.Name || email, email };
         const { redirectTo } = await oauth.completeAuthorization({
           request: approved.request,
-          userId: person.id,
+          userId: person?.id ?? `limited-${email}`,
           metadata: { email, connectedAt: new Date().toISOString() },
           scope: approved.request.scope,
           props,

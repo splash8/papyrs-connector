@@ -3,10 +3,11 @@ import http from "node:http";
 
 const users = {
   "tok-alice": { id: "U1", attributes: { Name: "Alice Zagreb", Email: "alice@ch-aviation.com", Group: "Zagreb", Position: "Editor" }, role_id: "normal", subgroup_id: "SG-ZG" },
+  "tok-carol": { id: "U3", attributes: { Name: "Carol Client", Email: "carol@example.com" }, role_id: "limited", subgroup_id: "SG-EXT" },
   "tok-bob": { id: "U2", attributes: { Name: "Bob Belgrade", Email: "bob@ch-aviation.com", Group: "Belgrade", Position: "Analyst" }, role_id: "normal", subgroup_id: "SG-BG" },
 };
 const pages = {
-  P1: { id: "P1", slug: "Company-Handbook", title: "Company Handbook", category: "HR", permissions: { U1: "edit", U2: "view" }, json: [[{ classname: "Paragraph", id: "w1", text: "Holidays: 25 days." }], []] },
+  P1: { id: "P1", slug: "Company-Handbook", title: "Company Handbook", category: "HR", permissions: { U1: "edit", U2: "view", U3: "view" }, json: [[{ classname: "Paragraph", id: "w1", text: "Holidays: 25 days." }], []] },
   P2: { id: "P2", slug: "Zagreb-Salaries", title: "Zagreb Salaries", category: "HR/Confidential", permissions: { U1: "view", U2: "no access" }, json: [[{ classname: "Paragraph", id: "w2", text: "SECRET salary table" }], []] },
 };
 let n = 3;
@@ -32,7 +33,7 @@ http
     if (!u) return send(403, { error: "Invalid token", status: 403 });
     const path = url.pathname.replace("/api/v1", "");
     let m;
-    if (path === "/people/all/") return send(200, Object.values(users));
+    if (path === "/people/all/") return u.role_id === "limited" ? send(403, { error: "No access to the People Directory", status: 403 }) : send(200, Object.values(users));
     if (path === "/pages/all/") return send(200, Object.values(pages).filter((p) => can(u, p, "view")).map(({ json, permissions, ...r }) => full(r)));
     if ((m = path.match(/^\/pages\/get\/(\w+)\/$/))) {
       const p = pages[m[1]];
