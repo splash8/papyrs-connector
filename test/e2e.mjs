@@ -135,4 +135,15 @@ r = await call(alice, "papyrs_apply_reviewed_change", { review_id: rid, approval
 assert.match(r.text, /No pending review/);
 console.log("applied once after approval, cannot be applied twice ✓");
 
+console.log("Connecting Carol (Limited User, no People Directory access)...");
+const carol = await connect("carol@example.com", "tok-carol");
+const carolTools = (await mcp(carol, "tools/list")).tools.map((t) => t.name);
+assert.ok(carolTools.includes("papyrs_read_page"));
+assert.ok(!carolTools.includes("papyrs_draft_new_page") && !carolTools.includes("papyrs_propose_change"));
+r = await call(carol, "papyrs_read_page", { page: "P1" });
+assert.match(r.text, /Company Handbook/);
+r = await call(carol, "papyrs_read_page", { page: "P2" });
+assert.ok(r.isError);
+console.log("Limited User connects read-only and still only sees her own pages ✓");
+
 console.log("\nALL TESTS PASSED");

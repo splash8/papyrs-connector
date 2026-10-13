@@ -5,7 +5,7 @@ import { PapyrsClient, PapyrsError, PapyrsPage, escapeHtml, markdownToWidgets, p
 /** What the OAuth grant stores for each connected person (encrypted at rest by workers-oauth-provider). */
 export interface Props {
   papyrsToken: string;
-  papyrsUserId: string;
+  papyrsUserId: string; // "" for Limited Users, who cannot open the People Directory
   name: string;
   email: string;
 }
@@ -70,7 +70,10 @@ export function buildServer(env: Env, props: Props): McpServer {
         "so results contain only what this person may see; never suggest content exists beyond what the tools return. " +
         "Papyrs allows about 6 API calls per minute, so prefer papyrs_search first and read only the pages you need. " +
         "Nothing is written to a live page directly: write tools create a private draft flagged for review, and a change is " +
-        "applied only after the person (or a named reviewer) has read it and explicitly approved it in chat.",
+        "applied only after the person (or a named reviewer) has read it and explicitly approved it in chat." +
+        (props.papyrsUserId
+          ? ""
+          : ` ${props.name} is a Papyrs Limited User, so this connection is read-only: drafting and proposing changes are not available.`),
     },
   );
 
@@ -228,6 +231,10 @@ export function buildServer(env: Env, props: Props): McpServer {
   );
 
   // ---------------- WRITE (always flagged for review) ----------------
+
+  // Limited Users can't open the People Directory, so we don't know their Papyrs user ID.
+  // Without it a draft can't be made private to them, so they get the read tools only.
+  if (!props.papyrsUserId) return server;
 
   const reviewers = reviewersOf(env).filter((id) => id !== props.papyrsUserId);
   const draftPermissions = () => {
