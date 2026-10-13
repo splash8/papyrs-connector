@@ -22,7 +22,7 @@ Mac/Linux: set the variables with `export FRESHDESK_DOMAIN=…` and run `python3
 |---|---|
 | `--exclude-groups "A,B,123"` | Groups to skip, by name (case-insensitive) or ID. An unknown name stops the script. |
 | `--exclude-ungrouped` | Also skip tickets with no group |
-| `--since 2024-01-01` | Only tickets updated on or after this date (default: all) |
+| `--since 2024-01-01` | Only tickets created on or after this date (default: all) |
 | `--until 2024-12-31` | Only tickets created on or before this date |
 | `--out file.csv` | Output path |
 

@@ -27,7 +27,7 @@ if (args.help) {
   console.log(`Options:
   --exclude-groups "A,B,123"  Group names or IDs to skip (case-insensitive names)
   --exclude-ungrouped         Also skip tickets that have no group
-  --since 2024-01-01          Only tickets updated on/after this date (default: all)
+  --since 2024-01-01          Only tickets created on/after this date (default: all)
   --until 2024-12-31          Only tickets created on/before this date
   --out file.csv              Output path (default: freshdesk-conversations.csv)
   --list-groups               Print the groups with their IDs and exit
@@ -164,12 +164,15 @@ const out = createWriteStream(args.out);
 out.write("﻿" + COLUMNS.join(",") + "\r\n"); // BOM so Excel reads UTF-8
 const write = (row) => out.write(COLUMNS.map((c) => csvCell(row[c])).join(",") + "\r\n");
 
+// A ticket created after --since was also updated after it, so the
+// updated_since walk above sees every such ticket; filter on created_at here.
+const sinceDate = new Date(args.since);
 const until = args.until ? new Date(args.until + (args.until.length <= 10 ? "T23:59:59Z" : "")) : null;
 let exported = 0, skipped = 0, rows = 0;
 
 for await (const t of tickets()) {
   if (excluded.has(t.group_id) || (args["exclude-ungrouped"] && !t.group_id) ||
-      (until && new Date(t.created_at) > until)) {
+      new Date(t.created_at) < sinceDate || (until && new Date(t.created_at) > until)) {
     skipped++;
     continue;
   }

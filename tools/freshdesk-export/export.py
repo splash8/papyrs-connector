@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 p = argparse.ArgumentParser(description="Export Freshdesk ticket conversations to CSV.")
 p.add_argument("--exclude-groups", default="", help='Group names or IDs to skip, e.g. "Sales,HR,123"')
 p.add_argument("--exclude-ungrouped", action="store_true", help="Also skip tickets that have no group")
-p.add_argument("--since", default="2000-01-01", help="Only tickets updated on/after this date (default: all)")
+p.add_argument("--since", default="2000-01-01", help="Only tickets created on/after this date (default: all)")
 p.add_argument("--until", help="Only tickets created on/before this date")
 p.add_argument("--out", default="freshdesk-conversations.csv", help="Output path")
 p.add_argument("--list-groups", action="store_true", help="Print the groups with their IDs and exit")
@@ -186,6 +186,9 @@ def tickets():
         since = last
 
 
+# A ticket created after --since was also updated after it, so the
+# updated_since walk above sees every such ticket; filter on created_at here.
+since_dt = parse_date(args.since)
 until = parse_date(args.until, end_of_day=True) if args.until else None
 exported = skipped = rows = 0
 
@@ -200,7 +203,7 @@ with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
     for t in tickets():
         gid = t.get("group_id")
         if gid in excluded or (args.exclude_ungrouped and not gid) or \
-                (until and parse_date(t["created_at"]) > until):
+                parse_date(t["created_at"]) < since_dt or (until and parse_date(t["created_at"]) > until):
             skipped += 1
             continue
         req = t.get("requester") or {}
