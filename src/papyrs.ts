@@ -109,8 +109,15 @@ export class PapyrsClient {
       query: { page: String(page), items_per_page: String(perPage) },
     });
   }
-  people() {
-    return this.call<PapyrsPerson[]>("GET", "/people/all/", { siteWide: true });
+  async people() {
+    try {
+      return await this.call<PapyrsPerson[]>("GET", "/people/all/", { siteWide: true });
+    } catch (e) {
+      // Some accounts are refused the site-wide directory but may read it through the subsite.
+      if (e instanceof PapyrsError && e.status === 403 && this.base !== this.siteBase)
+        return this.call<PapyrsPerson[]>("GET", "/people/all/");
+      throw e;
+    }
   }
   createPage(body: { title: string; json: unknown; category?: string; permissions?: Record<string, string>; notifications?: Record<string, string> }) {
     return this.call<PapyrsPage>("POST", "/pages/create/", { body });

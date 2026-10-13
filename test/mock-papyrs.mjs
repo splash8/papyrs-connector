@@ -31,7 +31,7 @@ http
     log.push(`${req.method} ${url.pathname} as ${u?.id}`);
     console.log(`${req.method} ${url.pathname} as ${u?.id ?? "INVALID"}`);
     if (!u) return send(403, { error: "Invalid token", status: 403 });
-    const path = url.pathname.replace("/api/v1", "");
+    const path = url.pathname.replace(/^\/@[^/]+/, "").replace("/api/v1", "");
     let m;
     if (path === "/people/all/") return u.role_id === "limited" ? send(403, { error: "No access to the People Directory", status: 403 }) : send(200, Object.values(users));
     if (path === "/pages/all/") return send(200, Object.values(pages).filter((p) => can(u, p, "view")).map(({ json, permissions, ...r }) => full(r)));

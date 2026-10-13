@@ -87,7 +87,7 @@ const defaultHandler = {
         let person;
         let limited = false;
         try {
-          const people = await new PapyrsClient(env.PAPYRS_BASE_URL, token).people();
+          const people = await new PapyrsClient(env.PAPYRS_BASE_URL, token, env.PAPYRS_SUBSITE).people();
           person = people.find((p) => (p.attributes.Email ?? "").trim().toLowerCase() === email);
         } catch (e) {
           // Limited Users can't open the People Directory. If the token still works for pages,
