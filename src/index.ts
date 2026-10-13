@@ -89,8 +89,9 @@ const defaultHandler = {
           const people = await new PapyrsClient(env.PAPYRS_BASE_URL, token).people();
           person = people.find((p) => (p.attributes.Email ?? "").trim().toLowerCase() === email);
         } catch (e) {
+          // Show Papyrs' own reply too, so an admin can tell a bad token from missing People Directory access.
           const msg = e instanceof PapyrsError && (e.status === 401 || e.status === 403 || e.status === 404)
-            ? "Papyrs did not accept this token (or it has no access to the People Directory)."
+            ? `Papyrs did not accept this token (or it has no access to the People Directory). Papyrs replied ${e.status}: ${e.message}`
             : e instanceof PapyrsError ? e.message : "Could not reach Papyrs. Try again in a minute.";
           return retry(form, env, handle, msg, email);
         }
