@@ -139,7 +139,11 @@ r = await call(alice, "papyrs_search", { query: "salary", subsite: "sales" });
 assert.ok(!r.isError, r.text);
 r = await call(alice, "papyrs_read_page", { page: "https://ch-aviation.papyrs.com/@sales/Company-Handbook" });
 assert.match(r.text, /Company Handbook/);
-console.log("subsite argument and @subsite URLs work ✓");
+r = await call(bob, "papyrs_search", { query: "salary", subsite: "sales" });
+assert.ok(r.isError && /403/.test(r.text), r.text);
+r = await call(bob, "papyrs_read_page", { page: "https://ch-aviation.papyrs.com/@sales/Company-Handbook" });
+assert.ok(r.isError, r.text);
+console.log("subsite argument and @subsite URLs work; non-members of the subsite are refused ✓");
 
 console.log("Connecting Carol (Limited User, no People Directory access)...");
 const carol = await connect("carol@example.com", "tok-carol");

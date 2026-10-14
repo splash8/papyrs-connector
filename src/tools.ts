@@ -146,7 +146,15 @@ export function buildServer(env: Env, props: Props): McpServer {
       return text(
         res.results
           .slice(0, 25)
-          .map((r) => `- [${r.cat}] ${r.desc} — ${r.lnk.startsWith("http") ? r.lnk : base + r.lnk} (id: ${r.id})`)
+          .map((r) => {
+            const pick = (...keys: string[]) => keys.map((k) => r[k]).find((v) => typeof v === "string" && v) as string | undefined;
+            const link = pick("lnk", "url", "link", "href") ?? "";
+            const title = pick("desc", "title", "name", "text") ?? JSON.stringify(r).slice(0, 200);
+            const kind = pick("cat", "type", "category");
+            const id = pick("id") ?? (typeof r.id === "number" ? String(r.id) : undefined);
+            const url = link && !link.startsWith("http") ? base + link : link;
+            return `- ${kind ? `[${kind}] ` : ""}${title}${url ? ` — ${url}` : ""}${id ? ` (id: ${id})` : ""}`;
+          })
           .join("\n"),
       );
     }),

@@ -96,7 +96,8 @@ export class PapyrsClient {
   }
 
   search(q: string) {
-    return this.call<{ results: { desc: string; lnk: string; cat: string; id: string }[] }>("GET", "/search/query/", { query: { q } });
+    // Field names vary by result type, so every field is optional here.
+    return this.call<{ results?: Record<string, unknown>[] }>("GET", "/search/query/", { query: { q } });
   }
   allPages() {
     return this.call<PapyrsPageSummary[]>("GET", "/pages/all/");

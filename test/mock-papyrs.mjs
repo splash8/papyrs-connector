@@ -10,6 +10,7 @@ const pages = {
   P1: { id: "P1", slug: "Company-Handbook", title: "Company Handbook", category: "HR", permissions: { U1: "edit", U2: "view", U3: "view" }, json: [[{ classname: "Paragraph", id: "w1", text: "Holidays: 25 days." }], []] },
   P2: { id: "P2", slug: "Zagreb-Salaries", title: "Zagreb Salaries", category: "HR/Confidential", permissions: { U1: "view", U2: "no access" }, json: [[{ classname: "Paragraph", id: "w2", text: "SECRET salary table" }], []] },
 };
+const subsiteMembers = { sales: ["U1"] };
 let n = 3;
 const can = (u, p, lvl) => {
   const l = p.permissions[u.id] ?? "no access";
@@ -31,6 +32,9 @@ http
     log.push(`${req.method} ${url.pathname} as ${u?.id}`);
     console.log(`${req.method} ${url.pathname} as ${u?.id ?? "INVALID"}`);
     if (!u) return send(403, { error: "Invalid token", status: 403 });
+    // Subsites other than "home" are members-only, like invitation-only subsites in Papyrs.
+    const sub = url.pathname.match(/^\/@([^/]+)/)?.[1];
+    if (sub && sub !== "home" && !(subsiteMembers[sub] ?? []).includes(u.id)) return send(403, { error: "You are not a member of this subsite", status: 403 });
     const path = url.pathname.replace(/^\/@[^/]+/, "").replace("/api/v1", "");
     let m;
     if (path === "/people/all/") return u.role_id === "limited" ? send(403, { error: "No access to the People Directory", status: 403 }) : send(200, Object.values(users));
