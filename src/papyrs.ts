@@ -48,6 +48,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class PapyrsClient {
   private siteBase: string;
   private base: string;
+  private subsite: string;
 
   // Pages, search and feeds live inside a subsite, so their URLs need "/@<subsite>".
   // The people directory is site-wide and stays at the site root.
@@ -56,6 +57,7 @@ export class PapyrsClient {
     const sub = subsite.trim().replace(/^@/, "");
     this.siteBase = root + "/api/v1";
     this.base = (sub ? `${root}/@${encodeURIComponent(sub)}` : root) + "/api/v1";
+    this.subsite = sub;
   }
 
   private async call<T>(
@@ -85,8 +87,12 @@ export class PapyrsClient {
         try {
           msg = (JSON.parse(text) as { error?: string }).error ?? text;
         } catch {}
-        if (res.status === 404) msg = "Not found, or you have no access to it in Papyrs.";
-        if (res.status === 403) msg = `Papyrs refused this for your account: ${msg}`;
+        // Name the subsite, so a refusal there reads as "not a member" rather than a broken connector.
+        const where = this.subsite && !opts.siteWide ? ` in subsite "${this.subsite}"` : "";
+        if (res.status === 404) msg = `Not found${where}, or you have no access to it in Papyrs.`;
+        if (res.status === 403)
+          msg = `Papyrs refused this for your account${where}: ${msg}` +
+            (where ? ". Usually this means the person is not a member of that subsite, or API access is off for it." : "");
         if (res.status === 429) msg = "Papyrs rate limit reached (6 requests per minute). Wait a minute and try again.";
         throw new PapyrsError(res.status, msg.slice(0, 500));
       }
