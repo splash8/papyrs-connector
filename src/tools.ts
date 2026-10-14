@@ -89,11 +89,60 @@ export function buildServer(env: Env, props: Props): McpServer {
   const papyrs = clientFor();
   const subsites = subsitesOf(env);
   const subsiteHelp =
-    subsites.length > 1
-      ? ` Papyrs is split into subsites and each is searched separately: ${subsites.map(([s, l]) => `"${s}" (${l})`).join(", ")}. ` +
-        `Pick the subsite that fits the question; if unsure, try "${defaultSubsite}" first, then the likely others.`
-      : " Pass a subsite name (the word after \"@\" in a Papyrs URL) to look outside the default subsite.";
-  const subsiteArg = z.string().optional().describe(`Subsite to look in (default "${defaultSubsite}").${subsites.length > 1 ? " One of: " + subsites.map(([s]) => s).join(", ") : ""}`);
+    ` Papyrs is split into subsites: ${subsites.map(([s, l]) => `"${s}" (${l})`).join(", ")}. ` +
+    "papyrs_search and papyrs_list_pages cover every subsite the person belongs to unless you name one; name a subsite to save API calls when you know where to look. " +
+    "If a result says some subsites were not searched (rate limit), search those again by name.";
+  const subsiteArg = z.string().optional().describe(`Subsite to look in (default "${defaultSubsite}"). One of: ${subsites.map(([s]) => s).join(", ")}`);
+  const subsiteFilter = z
+    .string()
+    .optional()
+    .describe(`Only this subsite; omit to cover all subsites the person belongs to. One of: ${subsites.map(([s]) => s).join(", ")}`);
+  const base = env.PAPYRS_BASE_URL.replace(/\/+$/, "");
+
+  // Subsites that refused this person (not a member) are remembered for a day, so a search across
+  // all subsites doesn't spend scarce API calls on them again. Papyrs still decides every time.
+  const noAccessKey = `noaccess:${props.papyrsUserId || props.email}`;
+  const FAN_OUT_DEADLINE_MS = 25_000;
+  /**
+   * Run fn on each subsite (a few at a time) and collect what came back. Subsites the person can't open
+   * are skipped silently; ones cut off by the rate limit or the time budget are reported so Claude can retry.
+   */
+  async function acrossSubsites<T>(only: string | undefined, fn: (c: PapyrsClient) => Promise<T>) {
+    if (only) return { results: [[only.replace(/^@/, ""), await fn(clientFor(only))]] as [string, T][], notSearched: [] as string[] };
+    const known = new Set((await env.REVIEW_KV.get<string[]>(noAccessKey, "json")) ?? []);
+    const queue = subsites.map(([s]) => s).filter((s) => !known.has(s));
+    const results: [string, T][] = [];
+    const notSearched: string[] = [];
+    let refused = false;
+    const started = Date.now();
+    const worker = async () => {
+      for (let s = queue.shift(); s !== undefined; s = queue.shift()) {
+        if (Date.now() - started > FAN_OUT_DEADLINE_MS) {
+          notSearched.push(s);
+          continue;
+        }
+        try {
+          // No wait-and-retry on 429 here: report the subsite as not searched instead of eating the time budget.
+          results.push([s, await fn(new PapyrsClient(env.PAPYRS_BASE_URL, props.papyrsToken, s, false))]);
+        } catch (e) {
+          if (e instanceof PapyrsError && (e.status === 403 || e.status === 404)) {
+            known.add(s);
+            refused = true;
+          } else notSearched.push(s);
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    if (refused) await env.REVIEW_KV.put(noAccessKey, JSON.stringify([...known]), { expirationTtl: 60 * 60 * 24 });
+    const order = (s: string) => subsites.findIndex(([x]) => x === s);
+    results.sort((a, b) => order(a[0]) - order(b[0]));
+    return { results, notSearched };
+  }
+  const notSearchedNote = (ns: string[]) =>
+    ns.length ? `\n\nNot searched (Papyrs rate limit or time budget), try again by name: ${ns.join(", ")}` : "";
+  /** Search links are sometimes relative to the subsite ("/page/..."), sometimes to the site ("/@sales/..."). */
+  const absolute = (link: string, subsite: string) =>
+    !link ? "" : link.startsWith("http") ? link : link.startsWith("/@") ? base + link : `${base}/@${subsite}${link.startsWith("/") ? "" : "/"}${link}`;
   const draftFolder = env.DRAFT_FOLDER || "Claude drafts";
   const server = new McpServer(
     { name: "ch-aviation Papyrs", version: "1.0.0" },
@@ -136,27 +185,24 @@ export function buildServer(env: Env, props: Props): McpServer {
       title: "Search Papyrs",
       description:
         "Search the ch-aviation Papyrs intranet (pages, files, people, form entries, comments) exactly as the connected person would in the Papyrs search box. Only results this person has access to are returned.",
-      inputSchema: { query: z.string().min(1).describe("Search words"), subsite: subsiteArg },
+      inputSchema: { query: z.string().min(1).describe("Search words"), subsite: subsiteFilter },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     wrap(async ({ query, subsite }) => {
-      const res = await clientFor(subsite).search(query);
-      if (!res.results?.length) return text(`No results for "${query}" in subsite "${subsite || defaultSubsite}" that ${props.name} can access.`);
-      const base = env.PAPYRS_BASE_URL.replace(/\/+$/, "");
-      return text(
-        res.results
-          .slice(0, 25)
-          .map((r) => {
-            const pick = (...keys: string[]) => keys.map((k) => r[k]).find((v) => typeof v === "string" && v) as string | undefined;
-            const link = pick("lnk", "url", "link", "href") ?? "";
-            const title = pick("desc", "title", "name", "text") ?? JSON.stringify(r).slice(0, 200);
-            const kind = pick("cat", "type", "category");
-            const id = pick("id") ?? (typeof r.id === "number" ? String(r.id) : undefined);
-            const url = link && !link.startsWith("http") ? base + link : link;
-            return `- ${kind ? `[${kind}] ` : ""}${title}${url ? ` — ${url}` : ""}${id ? ` (id: ${id})` : ""}`;
-          })
-          .join("\n"),
-      );
+      const { results, notSearched } = await acrossSubsites(subsite, (c) => c.search(query));
+      const lines: string[] = [];
+      for (const [sub, res] of results) {
+        for (const r of (res.results ?? []).slice(0, 25)) {
+          const pick = (...keys: string[]) => keys.map((k) => r[k]).find((v) => typeof v === "string" && v) as string | undefined;
+          const title = pick("desc", "title", "name", "text") ?? JSON.stringify(r).slice(0, 200);
+          const kind = pick("cat", "type", "category");
+          const id = pick("id") ?? (typeof r.id === "number" ? String(r.id) : undefined);
+          const url = absolute(pick("lnk", "url", "link", "href") ?? "", sub);
+          lines.push(`- [${sub}]${kind ? ` [${kind}]` : ""} ${title}${url ? ` — ${url}` : ""}${id ? ` (id: ${id})` : ""}`);
+        }
+      }
+      if (!lines.length) return text(`No results for "${query}"${subsite ? ` in subsite "${subsite}"` : ""} that ${props.name} can access.${notSearchedNote(notSearched)}`);
+      return text(lines.join("\n") + notSearchedNote(notSearched));
     }),
   );
 
@@ -169,21 +215,25 @@ export function buildServer(env: Env, props: Props): McpServer {
         folder: z.string().optional().describe('Folder path prefix, e.g. "HR" or "Main/Bizdev"'),
         title_contains: z.string().optional(),
         limit: z.number().int().min(1).max(200).default(50),
-        subsite: subsiteArg,
+        subsite: subsiteFilter,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     wrap(async ({ folder, title_contains, limit, subsite }) => {
-      let pages = await clientFor(subsite).allPages();
+      const { results, notSearched } = await acrossSubsites(subsite, (c) => c.allPages());
+      let pages = results
+        .flatMap(([sub, list]) => list.map((p) => ({ ...p, subsite: sub })))
+        .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
       if (folder) pages = pages.filter((p) => (p.category ?? "").toLowerCase().startsWith(folder.toLowerCase()));
       if (title_contains) pages = pages.filter((p) => p.title.toLowerCase().includes(title_contains.toLowerCase()));
-      if (!pages.length) return text("No matching pages that you can access.");
+      if (!pages.length) return text(`No matching pages that you can access.${notSearchedNote(notSearched)}`);
       return text(
         `${pages.length} page(s); showing ${Math.min(limit, pages.length)}:\n` +
           pages
             .slice(0, limit)
-            .map((p) => `- ${p.title} | folder: ${p.category || "-"} | updated ${p.updated_at?.slice(0, 10) ?? "?"} | id: ${p.id} | ${p.url}`)
-            .join("\n"),
+            .map((p) => `- ${p.title} | subsite: ${p.subsite} | folder: ${p.category || "-"} | updated ${p.updated_at?.slice(0, 10) ?? "?"} | id: ${p.id} | ${p.url}`)
+            .join("\n") +
+          notSearchedNote(notSearched),
       );
     }),
   );
@@ -200,7 +250,7 @@ export function buildServer(env: Env, props: Props): McpServer {
       const ref = await resolvePage(page, subsite);
       const p = await ref.client.getPage(ref.id);
       return text(
-        `# ${p.title}\nFolder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p)}`,
+        `# ${p.title}\nSubsite: ${ref.subsite} | folder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p, (l) => absolute(l, ref.subsite))}`,
       );
     }),
   );

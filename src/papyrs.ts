@@ -52,7 +52,7 @@ export class PapyrsClient {
 
   // Pages, search and feeds live inside a subsite, so their URLs need "/@<subsite>".
   // The people directory is site-wide and stays at the site root.
-  constructor(baseUrl: string, private token: string, subsite = "") {
+  constructor(baseUrl: string, private token: string, subsite = "", private retryOn429 = true) {
     const root = baseUrl.replace(/\/+$/, "");
     const sub = subsite.trim().replace(/^@/, "");
     this.siteBase = root + "/api/v1";
@@ -77,7 +77,7 @@ export class PapyrsClient {
         headers: { "Content-Type": "application/json", "User-Agent": "ch-aviation-claude-connector" },
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       });
-      if (res.status === 429 && attempt === 0) {
+      if (res.status === 429 && attempt === 0 && this.retryOn429) {
         await sleep(12_000);
         continue;
       }
@@ -169,16 +169,45 @@ export function markdownToWidgets(md: string): { classname: "Heading" | "Paragra
   return out;
 }
 
-export function pageToText(page: PapyrsPage, maxChars = 40_000): string {
+export function pageToText(page: PapyrsPage, absolute: (link: string) => string = (l) => l, maxChars = 40_000): string {
   const parts: string[] = [];
   for (const column of page.json ?? []) {
     for (const w of column ?? []) {
+      const links = widgetLinks(w).map(([t, u]) => `- ${t} — ${absolute(u)}`);
       if (w.classname === "Heading" && w.text) parts.push(`## ${w.text}`);
       else if (w.files?.length) parts.push(`[Attachments] ${w.files.map((f) => `${f.filename} (${f.url})`).join("; ")}`);
-      else if (w.text) parts.push(String(w.text));
+      else if (w.text) parts.push(String(w.text) + (links.length ? `\nLinks:\n${links.join("\n")}` : ""));
+      else if (links.length) parts.push(`[${w.classname}]\n${links.join("\n")}`);
       else parts.push(`[${w.classname} widget]`);
     }
   }
   const text = parts.join("\n\n");
   return text.length > maxChars ? text.slice(0, maxChars) + "\n\n[...truncated]" : text;
+}
+
+/**
+ * Links inside a widget, as [title, url]. Navigation and link widgets have no fixed documented shape,
+ * so walk the whole widget: <a href> in any HTML string, and any object with a url-like and a title-like field.
+ */
+export function widgetLinks(widget: unknown): [string, string][] {
+  const out = new Map<string, string>();
+  const strip = (h: string) => h.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+  const walk = (v: unknown, depth: number) => {
+    if (depth > 6 || v == null) return;
+    if (typeof v === "string") {
+      for (const m of v.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi))
+        if (!out.has(m[1])) out.set(m[1], strip(m[2]) || m[1]);
+      return;
+    }
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, depth + 1));
+    if (typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      const url = ["url", "href", "link", "lnk", "page_url"].map((k) => o[k]).find((x) => typeof x === "string" && x) as string | undefined;
+      const title = ["title", "name", "text", "label", "desc"].map((k) => o[k]).find((x) => typeof x === "string" && x) as string | undefined;
+      if (url && !out.has(url)) out.set(url, title ? strip(title) : url);
+      for (const x of Object.values(o)) walk(x, depth + 1);
+    }
+  };
+  walk(widget, 0);
+  return [...out].map(([u, t]) => [t, u]);
 }
