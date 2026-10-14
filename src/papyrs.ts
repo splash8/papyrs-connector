@@ -48,14 +48,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class PapyrsClient {
   private siteBase: string;
   private base: string;
+  private subsite: string;
 
   // Pages, search and feeds live inside a subsite, so their URLs need "/@<subsite>".
   // The people directory is site-wide and stays at the site root.
-  constructor(baseUrl: string, private token: string, subsite = "") {
+  constructor(baseUrl: string, private token: string, subsite = "", private retryOn429 = true) {
     const root = baseUrl.replace(/\/+$/, "");
     const sub = subsite.trim().replace(/^@/, "");
     this.siteBase = root + "/api/v1";
     this.base = (sub ? `${root}/@${encodeURIComponent(sub)}` : root) + "/api/v1";
+    this.subsite = sub;
   }
 
   private async call<T>(
@@ -75,7 +77,7 @@ export class PapyrsClient {
         headers: { "Content-Type": "application/json", "User-Agent": "ch-aviation-claude-connector" },
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       });
-      if (res.status === 429 && attempt === 0) {
+      if (res.status === 429 && attempt === 0 && this.retryOn429) {
         await sleep(12_000);
         continue;
       }
@@ -85,8 +87,12 @@ export class PapyrsClient {
         try {
           msg = (JSON.parse(text) as { error?: string }).error ?? text;
         } catch {}
-        if (res.status === 404) msg = "Not found, or you have no access to it in Papyrs.";
-        if (res.status === 403) msg = `Papyrs refused this for your account: ${msg}`;
+        // Name the subsite, so a refusal there reads as "not a member" rather than a broken connector.
+        const where = this.subsite && !opts.siteWide ? ` in subsite "${this.subsite}"` : "";
+        if (res.status === 404) msg = `Not found${where}, or you have no access to it in Papyrs.`;
+        if (res.status === 403)
+          msg = `Papyrs refused this for your account${where}: ${msg}` +
+            (where ? ". Usually this means the person is not a member of that subsite, or API access is off for it." : "");
         if (res.status === 429) msg = "Papyrs rate limit reached (6 requests per minute). Wait a minute and try again.";
         throw new PapyrsError(res.status, msg.slice(0, 500));
       }
@@ -163,16 +169,45 @@ export function markdownToWidgets(md: string): { classname: "Heading" | "Paragra
   return out;
 }
 
-export function pageToText(page: PapyrsPage, maxChars = 40_000): string {
+export function pageToText(page: PapyrsPage, absolute: (link: string) => string = (l) => l, maxChars = 40_000): string {
   const parts: string[] = [];
   for (const column of page.json ?? []) {
     for (const w of column ?? []) {
+      const links = widgetLinks(w).map(([t, u]) => `- ${t} — ${absolute(u)}`);
       if (w.classname === "Heading" && w.text) parts.push(`## ${w.text}`);
       else if (w.files?.length) parts.push(`[Attachments] ${w.files.map((f) => `${f.filename} (${f.url})`).join("; ")}`);
-      else if (w.text) parts.push(String(w.text));
+      else if (w.text) parts.push(String(w.text) + (links.length ? `\nLinks:\n${links.join("\n")}` : ""));
+      else if (links.length) parts.push(`[${w.classname}]\n${links.join("\n")}`);
       else parts.push(`[${w.classname} widget]`);
     }
   }
   const text = parts.join("\n\n");
   return text.length > maxChars ? text.slice(0, maxChars) + "\n\n[...truncated]" : text;
+}
+
+/**
+ * Links inside a widget, as [title, url]. Navigation and link widgets have no fixed documented shape,
+ * so walk the whole widget: <a href> in any HTML string, and any object with a url-like and a title-like field.
+ */
+export function widgetLinks(widget: unknown): [string, string][] {
+  const out = new Map<string, string>();
+  const strip = (h: string) => h.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+  const walk = (v: unknown, depth: number) => {
+    if (depth > 6 || v == null) return;
+    if (typeof v === "string") {
+      for (const m of v.matchAll(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi))
+        if (!out.has(m[1])) out.set(m[1], strip(m[2]) || m[1]);
+      return;
+    }
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, depth + 1));
+    if (typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      const url = ["url", "href", "link", "lnk", "page_url"].map((k) => o[k]).find((x) => typeof x === "string" && x) as string | undefined;
+      const title = ["title", "name", "text", "label", "desc"].map((k) => o[k]).find((x) => typeof x === "string" && x) as string | undefined;
+      if (url && !out.has(url)) out.set(url, title ? strip(title) : url);
+      for (const x of Object.values(o)) walk(x, depth + 1);
+    }
+  };
+  walk(widget, 0);
+  return [...out].map(([u, t]) => [t, u]);
 }

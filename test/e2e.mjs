@@ -135,15 +135,31 @@ r = await call(alice, "papyrs_apply_reviewed_change", { review_id: rid, approval
 assert.match(r.text, /No pending review/);
 console.log("applied once after approval, cannot be applied twice ✓");
 
-r = await call(alice, "papyrs_search", { query: "salary", subsite: "sales" });
-assert.ok(!r.isError, r.text);
-r = await call(alice, "papyrs_read_page", { page: "https://ch-aviation.papyrs.com/@sales/Company-Handbook" });
-assert.match(r.text, /Company Handbook/);
-r = await call(bob, "papyrs_search", { query: "salary", subsite: "sales" });
-assert.ok(r.isError && /403/.test(r.text), r.text);
-r = await call(bob, "papyrs_read_page", { page: "https://ch-aviation.papyrs.com/@sales/Company-Handbook" });
+// Search and list cover every subsite the person belongs to, tagged with the subsite.
+r = await call(alice, "papyrs_search", { query: "trial" });
+assert.match(r.text, /\[sales\].*Trial set-up/);
+assert.match(r.text, /@sales\/Trial-set-up-Trial-extension/);
+r = await call(alice, "papyrs_list_pages", { title_contains: "trial" });
+assert.match(r.text, /Trial set-up.*subsite: sales/);
+r = await call(alice, "papyrs_search", { query: "trial", subsite: "sales" });
+assert.match(r.text, /Trial set-up/);
+console.log("search and list cover all subsites, tagged with the subsite ✓");
+
+// Bob is not a member of sales: nothing from it, no error, and not even with a direct link.
+r = await call(bob, "papyrs_search", { query: "trial" });
+assert.ok(!r.isError && !/Trial set-up/.test(r.text), r.text);
+r = await call(bob, "papyrs_search", { query: "trial", subsite: "sales" });
+assert.ok(r.isError && /403/.test(r.text) && /not a member/.test(r.text), r.text);
+r = await call(bob, "papyrs_read_page", { page: "https://ch-aviation.papyrs.com/@sales/Trial-set-up-Trial-extension" });
 assert.ok(r.isError, r.text);
-console.log("subsite argument and @subsite URLs work; non-members of the subsite are refused ✓");
+console.log("non-members of a subsite get nothing from it ✓");
+
+// Reading a hub page returns the links inside its navigation widget and its paragraphs.
+r = await call(alice, "papyrs_read_page", { page: "https://ch-aviation.papyrs.com/@sales/Sales-Wiki" });
+assert.match(r.text, /Subsite: sales/);
+assert.match(r.text, /Trial set-up \/ Trial extension — http:\/\/localhost:9000\/@sales\/Trial-set-up-Trial-extension/);
+assert.match(r.text, /pricing — http:\/\/localhost:9000\/@sales\/Pricing/);
+console.log("navigation widget links come back when reading a page ✓");
 
 console.log("Connecting Carol (Limited User, no People Directory access)...");
 const carol = await connect("carol@example.com", "tok-carol");

@@ -69,7 +69,7 @@ Menu names in Claude change from time to time. If something looks different, see
 
 ```bash
 node test/mock-papyrs.mjs &        # fake Papyrs with two users and per-user permissions
-npx wrangler dev --var PUBLIC_URL:http://localhost:8787 --var PAPYRS_BASE_URL:http://localhost:9000 --var ALLOWED_REDIRECT_HOSTS: --var PAPYRS_SUBSITE:
+npx wrangler dev --var PUBLIC_URL:http://localhost:8787 --var PAPYRS_BASE_URL:http://localhost:9000 --var ALLOWED_REDIRECT_HOSTS: --var PAPYRS_SUBSITE:home --var PAPYRS_SUBSITES:home=Home,sales=Sales,data=Data
 node test/e2e.mjs                  # full OAuth sign-in for both users + all tools
 ```
 
