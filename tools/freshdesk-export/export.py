@@ -17,6 +17,7 @@ No extra packages needed; Python 3.8+.
 import argparse
 import base64
 import csv
+import http.client
 import json
 import os
 import re
@@ -33,6 +34,8 @@ p.add_argument("--exclude-ungrouped", action="store_true", help="Also skip ticke
 p.add_argument("--since", default="2000-01-01", help="Only tickets created on/after this date (default: all)")
 p.add_argument("--until", help="Only tickets created on/before this date")
 p.add_argument("--out", default="freshdesk-conversations.csv", help="Output path")
+p.add_argument("--resume", action="store_true",
+               help="Continue an interrupted export: keep the tickets already in --out and add the rest")
 p.add_argument("--list-groups", action="store_true", help="Print the groups with their IDs and exit")
 args = p.parse_args()
 
@@ -66,10 +69,12 @@ def api(path):
                 time.sleep(wait)
                 continue
             raise ApiError(e.code, f"GET {path} -> {e.code}: {e.read().decode(errors='replace')}")
-        except urllib.error.URLError as e:
-            if attempt < 5:
-                print(f"  network error ({e.reason}), retrying...", file=sys.stderr)
-                time.sleep(5 * attempt)
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # Dropped connections, timeouts, truncated responses (e.g. after
+            # the PC slept or the VPN reconnected during a long rate-limit wait).
+            if attempt < 10:
+                print(f"  network error ({e}), retrying...", file=sys.stderr)
+                time.sleep(min(60, 5 * attempt))
                 continue
             raise
 
@@ -156,9 +161,7 @@ except ApiError as e:
 # The list endpoint only goes back 30 days unless updated_since is given, and
 # stops at a page limit; so walk by updated_at ascending and restart the
 # window from the last seen timestamp whenever a page limit is hit.
-def tickets():
-    seen = set()
-    since = parse_date(args.since).strftime("%Y-%m-%dT%H:%M:%SZ")
+def tickets(seen, since):
     while True:
         page, last, fresh = 1, None, 0
         while True:
@@ -191,16 +194,42 @@ def tickets():
 since_dt = parse_date(args.since)
 until = parse_date(args.until, end_of_day=True) if args.until else None
 exported = skipped = rows = 0
+done = set()
+walk_from = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+if os.path.exists(args.out) and os.path.getsize(args.out) > 0:
+    if not args.resume:
+        sys.exit(f"{args.out} already exists. Add --resume to continue that export, "
+                 "or delete/rename the file to start over.")
+    with open(args.out, newline="", encoding="utf-8-sig") as f:
+        kept = list(csv.DictReader(f))
+    if kept:
+        # Tickets are written in updated_at order, so continue the walk from the
+        # last one. It may have been cut off mid-thread, so drop it and redo it.
+        last_id = kept[-1]["ticket_id"]
+        walk_from = max(walk_from, max(r["ticket_updated_at"] for r in kept))
+        kept = [r for r in kept if r["ticket_id"] != last_id]
+        done = {int(r["ticket_id"]) for r in kept}
+    with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=COLUMNS)
+        w.writeheader()
+        w.writerows(kept)
+    exported, rows = len(done), len(kept)
+    print(f"Resuming: {exported} tickets ({rows} rows) already in {args.out}", file=sys.stderr)
+    mode = "a"
+else:
+    mode = "w"
 
 # utf-8-sig writes a BOM so Excel reads accents correctly
-with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
+with open(args.out, mode, newline="", encoding="utf-8" if mode == "a" else "utf-8-sig") as f:
     w = csv.DictWriter(f, fieldnames=COLUMNS)
-    w.writeheader()
+    if mode == "w":
+        w.writeheader()
 
     def write(row):
         w.writerow({k: cell(row.get(k)) for k in COLUMNS})
 
-    for t in tickets():
+    for t in tickets(set(done), walk_from):
         gid = t.get("group_id")
         if gid in excluded or (args.exclude_ungrouped and not gid) or \
                 parse_date(t["created_at"]) < since_dt or (until and parse_date(t["created_at"]) > until):
@@ -252,6 +281,7 @@ with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
             })
             rows += 1
 
+        f.flush()  # keep the file complete up to this ticket if the run is interrupted
         exported += 1
         if exported % 50 == 0:
             print(f"  {exported} tickets, {rows} rows...", file=sys.stderr)

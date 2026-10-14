@@ -24,7 +24,8 @@ Mac/Linux: set the variables with `export FRESHDESK_DOMAIN=…` and run `python3
 | `--exclude-ungrouped` | Also skip tickets with no group |
 | `--since 2024-01-01` | Only tickets created on or after this date (default: all) |
 | `--until 2024-12-31` | Only tickets created on or before this date |
-| `--out file.csv` | Output path |
+| `--out file.csv` | Output path. The script won't overwrite an existing file unless you add `--resume`. |
+| `--resume` | Continue an interrupted export (Python version only). Run the same command again with `--resume` added; tickets already in the file are kept and the rest are added. |
 
 Use an admin's API key. An agent's key only returns tickets that agent can see.
 
@@ -35,5 +36,6 @@ The file has one row per conversation entry, and every row repeats the ticket's 
 ## Notes
 
 - Freshdesk returns deleted and spam tickets only on request, so this export leaves them out.
+- If the run stops (crash, closed window, PC restart), rerun the same command with `--resume`. The last ticket in the file may be cut off mid-thread, so it is fetched again. When resuming, the `Done:` line's "skipped" count covers only that run.
 - The script makes one API call per ticket, plus one more for each extra 100 entries in a long thread. It waits and retries when Freshdesk returns 429. A large helpdesk can take hours on a low-tier plan's rate limit.
 - Author names are filled in for agents and for the ticket's requester. Other contacts show only `author_id` and `from_email`.
