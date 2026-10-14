@@ -8,6 +8,7 @@
     "PUBLIC_URL": "https://papyrs-connector.sanja-ples.workers.dev",
     "PAPYRS_BASE_URL": "https://ch-aviation.papyrs.com",
     "PAPYRS_SUBSITE": "home",
+    "PAPYRS_SUBSITES": "",
     "DRAFT_FOLDER": "Claude drafts",
     "REVIEWER_IDS": "",
     "ALLOWED_REDIRECT_HOSTS": "claude.ai,claude.com"

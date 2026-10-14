@@ -16,7 +16,8 @@ export interface Env {
   OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
   PUBLIC_URL: string; // where this Worker is reachable, e.g. https://papyrs-connector.<you>.workers.dev
   PAPYRS_BASE_URL: string; // e.g. https://ch-aviation.papyrs.com
-  PAPYRS_SUBSITE: string; // subsite name from the Papyrs URL, e.g. "Intranet"
+  PAPYRS_SUBSITE: string; // default subsite name from the Papyrs URL, e.g. "home"
+  PAPYRS_SUBSITES?: string; // optional, all subsites Claude may look in: "home=Intranet Home,sales=Sales,..."
   DRAFT_FOLDER: string; // e.g. "Claude drafts"
   REVIEWER_IDS?: string; // optional comma-separated Papyrs user IDs who review every Claude change
   ALLOWED_REDIRECT_HOSTS?: string; // e.g. "claude.ai,claude.com"
@@ -29,6 +30,7 @@ interface PendingChange {
   reviewers: string[];
   type: "add_text" | "add_heading" | "post_comment";
   targetPageId: string;
+  targetSubsite?: string; // absent on proposals made before subsites were supported = default subsite
   targetTitle: string;
   targetUrl: string;
   content: string;
@@ -59,8 +61,39 @@ const reviewersOf = (env: Env) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+/** Configured subsites as [slug, label] pairs; the default subsite always comes first. */
+const subsitesOf = (env: Env): [string, string][] => {
+  const list: [string, string][] = (env.PAPYRS_SUBSITES ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const [slug, label] = s.split("=").map((x) => x.trim());
+      return [slug.replace(/^@/, ""), label || slug];
+    });
+  const def = (env.PAPYRS_SUBSITE ?? "").replace(/^@/, "");
+  if (def && !list.some(([s]) => s.toLowerCase() === def.toLowerCase())) list.unshift([def, def]);
+  return list;
+};
+
 export function buildServer(env: Env, props: Props): McpServer {
-  const papyrs = new PapyrsClient(env.PAPYRS_BASE_URL, props.papyrsToken, env.PAPYRS_SUBSITE);
+  const defaultSubsite = (env.PAPYRS_SUBSITE ?? "").replace(/^@/, "");
+  const clients = new Map<string, PapyrsClient>();
+  /** One client per subsite: Papyrs pages, search and forms live inside a subsite ("/@sales/..."). */
+  const clientFor = (subsite?: string) => {
+    const s = (subsite ?? "").trim().replace(/^@/, "") || defaultSubsite;
+    const key = s.toLowerCase();
+    if (!clients.has(key)) clients.set(key, new PapyrsClient(env.PAPYRS_BASE_URL, props.papyrsToken, s));
+    return clients.get(key)!;
+  };
+  const papyrs = clientFor();
+  const subsites = subsitesOf(env);
+  const subsiteHelp =
+    subsites.length > 1
+      ? ` Papyrs is split into subsites and each is searched separately: ${subsites.map(([s, l]) => `"${s}" (${l})`).join(", ")}. ` +
+        `Pick the subsite that fits the question; if unsure, try "${defaultSubsite}" first, then the likely others.`
+      : " Pass a subsite name (the word after \"@\" in a Papyrs URL) to look outside the default subsite.";
+  const subsiteArg = z.string().optional().describe(`Subsite to look in (default "${defaultSubsite}").${subsites.length > 1 ? " One of: " + subsites.map(([s]) => s).join(", ") : ""}`);
   const draftFolder = env.DRAFT_FOLDER || "Claude drafts";
   const server = new McpServer(
     { name: "ch-aviation Papyrs", version: "1.0.0" },
@@ -68,7 +101,9 @@ export function buildServer(env: Env, props: Props): McpServer {
       instructions:
         `You are connected to the ch-aviation Papyrs intranet as ${props.name}. Every call runs with ${props.name}'s own Papyrs token, ` +
         "so results contain only what this person may see; never suggest content exists beyond what the tools return. " +
-        "Papyrs allows about 6 API calls per minute, so prefer papyrs_search first and read only the pages you need. " +
+        "Papyrs allows about 6 API calls per minute, so prefer papyrs_search first and read only the pages you need." +
+        subsiteHelp +
+        " " +
         "Nothing is written to a live page directly: write tools create a private draft flagged for review, and a change is " +
         "applied only after the person (or a named reviewer) has read it and explicitly approved it in chat." +
         (props.papyrsUserId
@@ -77,15 +112,20 @@ export function buildServer(env: Env, props: Props): McpServer {
     },
   );
 
-  /** Accepts a page ID, a full Papyrs URL, or a slug. Costs one extra call only for URLs/slugs. */
-  async function resolvePageId(ref: string): Promise<string> {
+  /**
+   * Accepts a page ID, a full Papyrs URL, or a slug, and returns the page ID plus the subsite it lives in.
+   * A URL's "/@<subsite>/" wins over the subsite argument. Costs one extra call only for URLs/slugs.
+   */
+  async function resolvePage(ref: string, subsite?: string): Promise<{ id: string; subsite: string; client: PapyrsClient }> {
     const r = ref.trim();
-    if (!r.includes("/") && !r.includes("-") && r.length <= 8) return r;
+    const s = (r.match(/\/@([^/?#]+)/)?.[1] ?? subsite ?? "").trim() || defaultSubsite;
+    const client = clientFor(s);
+    if (!r.includes("/") && !r.includes("-") && r.length <= 8) return { id: r, subsite: s, client };
     const slug = r.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop() ?? r;
-    const pages = await papyrs.allPages();
+    const pages = await client.allPages();
     const hit = pages.find((p) => p.slug === slug || p.url.replace(/\/+$/, "").endsWith("/" + slug) || p.id === slug);
-    if (!hit) throw new PapyrsError(404, `No page matching "${ref}" that you can access.`);
-    return hit.id;
+    if (!hit) throw new PapyrsError(404, `No page matching "${ref}" in subsite "${s}" that you can access.`);
+    return { id: hit.id, subsite: s, client };
   }
 
   // ---------------- READ ----------------
@@ -96,17 +136,25 @@ export function buildServer(env: Env, props: Props): McpServer {
       title: "Search Papyrs",
       description:
         "Search the ch-aviation Papyrs intranet (pages, files, people, form entries, comments) exactly as the connected person would in the Papyrs search box. Only results this person has access to are returned.",
-      inputSchema: { query: z.string().min(1).describe("Search words") },
+      inputSchema: { query: z.string().min(1).describe("Search words"), subsite: subsiteArg },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    wrap(async ({ query }) => {
-      const res = await papyrs.search(query);
-      if (!res.results?.length) return text(`No results for "${query}" that ${props.name} can access.`);
+    wrap(async ({ query, subsite }) => {
+      const res = await clientFor(subsite).search(query);
+      if (!res.results?.length) return text(`No results for "${query}" in subsite "${subsite || defaultSubsite}" that ${props.name} can access.`);
       const base = env.PAPYRS_BASE_URL.replace(/\/+$/, "");
       return text(
         res.results
           .slice(0, 25)
-          .map((r) => `- [${r.cat}] ${r.desc} — ${r.lnk.startsWith("http") ? r.lnk : base + r.lnk} (id: ${r.id})`)
+          .map((r) => {
+            const pick = (...keys: string[]) => keys.map((k) => r[k]).find((v) => typeof v === "string" && v) as string | undefined;
+            const link = pick("lnk", "url", "link", "href") ?? "";
+            const title = pick("desc", "title", "name", "text") ?? JSON.stringify(r).slice(0, 200);
+            const kind = pick("cat", "type", "category");
+            const id = pick("id") ?? (typeof r.id === "number" ? String(r.id) : undefined);
+            const url = link && !link.startsWith("http") ? base + link : link;
+            return `- ${kind ? `[${kind}] ` : ""}${title}${url ? ` — ${url}` : ""}${id ? ` (id: ${id})` : ""}`;
+          })
           .join("\n"),
       );
     }),
@@ -121,11 +169,12 @@ export function buildServer(env: Env, props: Props): McpServer {
         folder: z.string().optional().describe('Folder path prefix, e.g. "HR" or "Main/Bizdev"'),
         title_contains: z.string().optional(),
         limit: z.number().int().min(1).max(200).default(50),
+        subsite: subsiteArg,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    wrap(async ({ folder, title_contains, limit }) => {
-      let pages = await papyrs.allPages();
+    wrap(async ({ folder, title_contains, limit, subsite }) => {
+      let pages = await clientFor(subsite).allPages();
       if (folder) pages = pages.filter((p) => (p.category ?? "").toLowerCase().startsWith(folder.toLowerCase()));
       if (title_contains) pages = pages.filter((p) => p.title.toLowerCase().includes(title_contains.toLowerCase()));
       if (!pages.length) return text("No matching pages that you can access.");
@@ -144,11 +193,12 @@ export function buildServer(env: Env, props: Props): McpServer {
     {
       title: "Read a Papyrs page",
       description: "Read the text content of one Papyrs page (by page ID, URL or slug). Fails if the connected person has no access.",
-      inputSchema: { page: z.string().describe("Page ID (e.g. SKvP), full URL, or slug") },
+      inputSchema: { page: z.string().describe("Page ID (e.g. SKvP), full URL, or slug"), subsite: subsiteArg },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    wrap(async ({ page }) => {
-      const p = await papyrs.getPage(await resolvePageId(page));
+    wrap(async ({ page, subsite }) => {
+      const ref = await resolvePage(page, subsite);
+      const p = await ref.client.getPage(ref.id);
       return text(
         `# ${p.title}\nFolder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p)}`,
       );
@@ -164,11 +214,13 @@ export function buildServer(env: Env, props: Props): McpServer {
         page: z.string().describe("Page ID, URL or slug of the page holding the form"),
         page_number: z.number().int().min(0).default(0),
         per_page: z.number().int().min(1).max(250).default(50),
+        subsite: subsiteArg,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    wrap(async ({ page, page_number, per_page }) => {
-      const rows = await papyrs.records(await resolvePageId(page), page_number, per_page);
+    wrap(async ({ page, page_number, per_page, subsite }) => {
+      const ref = await resolvePage(page, subsite);
+      const rows = await ref.client.records(ref.id, page_number, per_page);
       if (!rows.length) return text("No form records on this page (or none you can see).");
       return text(rows.map((r) => r.map((f) => `${f.field}: ${f.value}`).join(" | ")).join("\n"));
     }),
@@ -209,11 +261,13 @@ export function buildServer(env: Env, props: Props): McpServer {
       inputSchema: {
         page: z.string().describe("Page ID, URL or slug"),
         subgroup: z.string().optional().describe("Only show people in this group (group name or subgroup ID)"),
+        subsite: subsiteArg,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    wrap(async ({ page, subgroup }) => {
-      const p = await papyrs.getPage(await resolvePageId(page));
+    wrap(async ({ page, subgroup, subsite }) => {
+      const ref = await resolvePage(page, subsite);
+      const p = await ref.client.getPage(ref.id);
       if (!p.permissions) return text("Papyrs did not return permissions for this page to your account.");
       const people = await papyrs.people();
       const sg = subgroup?.toLowerCase();
@@ -295,11 +349,13 @@ export function buildServer(env: Env, props: Props): McpServer {
         change_type: z.enum(["add_text", "add_heading", "post_comment"]),
         content: z.string().min(1).describe("Markdown for add_text; plain text for add_heading and post_comment"),
         reason: z.string().optional().describe("One line on why, shown to the reviewer"),
+        subsite: subsiteArg,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    wrap(async ({ page, change_type, content, reason }) => {
-      const target: PapyrsPage = await papyrs.getPage(await resolvePageId(page));
+    wrap(async ({ page, change_type, content, reason, subsite }) => {
+      const ref = await resolvePage(page, subsite);
+      const target: PapyrsPage = await ref.client.getPage(ref.id);
       const myLevel = target.permissions?.[props.papyrsUserId];
       if (change_type !== "post_comment" && myLevel && myLevel !== "edit")
         return text(`${props.name} has "${myLevel}" access to "${target.title}", not edit, so this change cannot be applied later. Nothing was created.`);
@@ -327,6 +383,7 @@ export function buildServer(env: Env, props: Props): McpServer {
         reviewers,
         type: change_type,
         targetPageId: target.id,
+        targetSubsite: ref.subsite,
         targetTitle: target.title,
         targetUrl: target.url,
         content,
@@ -379,13 +436,14 @@ export function buildServer(env: Env, props: Props): McpServer {
       if (!c) return text(`No pending review ${review_id}. It may be applied, discarded or expired.`);
       if (c.authorId !== props.papyrsUserId && !c.reviewers.includes(props.papyrsUserId))
         return text(`${props.name} is neither the author nor a reviewer of ${review_id}.`);
+      const live = clientFor(c.targetSubsite);
       if (c.type === "add_text") {
         for (const w of markdownToWidgets(c.content))
-          await papyrs.addWidget(c.targetPageId, w.classname === "Heading" ? "heading" : "paragraph", w.val);
+          await live.addWidget(c.targetPageId, w.classname === "Heading" ? "heading" : "paragraph", w.val);
       } else if (c.type === "add_heading") {
-        await papyrs.addWidget(c.targetPageId, "heading", escapeHtml(c.content));
+        await live.addWidget(c.targetPageId, "heading", escapeHtml(c.content));
       } else {
-        await papyrs.postToPage(c.targetPageId, c.content);
+        await live.postToPage(c.targetPageId, c.content);
       }
       await env.REVIEW_KV.delete(key);
       try {
