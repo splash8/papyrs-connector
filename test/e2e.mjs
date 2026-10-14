@@ -159,7 +159,8 @@ r = await call(alice, "papyrs_read_page", { page: "https://ch-aviation.papyrs.co
 assert.match(r.text, /Subsite: sales/);
 assert.match(r.text, /Trial set-up \/ Trial extension — http:\/\/localhost:9000\/@sales\/Trial-set-up-Trial-extension/);
 assert.match(r.text, /pricing — http:\/\/localhost:9000\/@sales\/Pricing/);
-console.log("navigation widget links come back when reading a page ✓");
+assert.match(r.text, /likely pages[\s\S]*Adding a user — https:\/\/ch-aviation\.papyrs\.com\/@sales\/Adding-a-user/);
+console.log("navigation widget links come back when reading a page, folder-driven ones matched by heading ✓");
 
 console.log("Connecting Carol (Limited User, no People Directory access)...");
 const carol = await connect("carol@example.com", "tok-carol");

@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { PapyrsClient, PapyrsError, PapyrsPage, escapeHtml, markdownToWidgets, pageToText } from "./papyrs";
+import { PapyrsClient, PapyrsError, PapyrsPage, PapyrsPageSummary, PapyrsWidget, escapeHtml, markdownToWidgets, pageToText, widgetLinks, widgetStrings } from "./papyrs";
 
 /** What the OAuth grant stores for each connected person (encrypted at rest by workers-oauth-provider). */
 export interface Props {
@@ -177,6 +177,56 @@ export function buildServer(env: Env, props: Props): McpServer {
     return { id: hit.id, subsite: s, client };
   }
 
+  /**
+   * Navigation widgets don't carry their links: Papyrs fills them from a folder (or a list of pages) when it
+   * renders the page. Match each one against the subsite's page list (one extra API call, only when needed):
+   * first by the widget's own settings (a folder name or page IDs), then by the heading right above it.
+   */
+  async function resolveNavigation(p: PapyrsPage, client: PapyrsClient) {
+    const resolved = new Map<PapyrsWidget, { links: [string, string][]; note: string }>();
+    const navs: { w: PapyrsWidget; heading?: string }[] = [];
+    for (const column of p.json ?? []) {
+      let heading: string | undefined;
+      for (const w of column ?? []) {
+        if (w.classname === "Heading" && w.text) heading = String(w.text).trim();
+        else if (!w.text && !w.files?.length && !widgetLinks(w).length) navs.push({ w, heading });
+      }
+    }
+    if (!navs.length) return resolved;
+    let pages: PapyrsPageSummary[];
+    try {
+      pages = (await client.allPages()).filter((x) => x.id !== p.id);
+    } catch {
+      return resolved;
+    }
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const asLinks = (list: PapyrsPageSummary[]) => list.slice(0, 40).map((x) => [x.title, x.url] as [string, string]);
+    for (const { w, heading } of navs) {
+      const settings = widgetStrings(w).map(norm);
+      const byId = pages.filter((x) => settings.includes(norm(x.id)));
+      const byFolder = pages.filter((x) => {
+        const c = norm(x.category ?? "");
+        return settings.some((s) => s && (c === s || c.startsWith(s + "/") || c.endsWith("/" + s)));
+      });
+      if (byId.length) resolved.set(w, { links: asLinks(byId), note: "pages it links to" });
+      else if (byFolder.length) resolved.set(w, { links: asLinks(byFolder), note: "pages in its folder" });
+      else if (heading) {
+        // Folders are often named a bit differently from the heading ("User Accounts" vs "General - User Account"):
+        // match a folder segment that contains every word of the heading, ignoring plural "s".
+        const words = (s: string) => norm(s).split(/[^a-z0-9]+/).filter((x) => x.length > 1).map((x) => x.replace(/s$/, ""));
+        const hw = words(heading);
+        const byHeading = hw.length
+          ? pages.filter((x) => (x.category ?? "").split("/").some((seg) => {
+              const sw = words(seg);
+              return hw.every((h) => sw.includes(h));
+            }))
+          : [];
+        if (byHeading.length) resolved.set(w, { links: asLinks(byHeading), note: `likely pages: folder named "${heading}"` });
+      }
+    }
+    return resolved;
+  }
+
   // ---------------- READ ----------------
 
   server.registerTool(
@@ -249,8 +299,9 @@ export function buildServer(env: Env, props: Props): McpServer {
     wrap(async ({ page, subsite }) => {
       const ref = await resolvePage(page, subsite);
       const p = await ref.client.getPage(ref.id);
+      const resolved = await resolveNavigation(p, ref.client);
       return text(
-        `# ${p.title}\nSubsite: ${ref.subsite} | folder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p, (l) => absolute(l, ref.subsite))}`,
+        `# ${p.title}\nSubsite: ${ref.subsite} | folder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p, (l) => absolute(l, ref.subsite), resolved)}`,
       );
     }),
   );

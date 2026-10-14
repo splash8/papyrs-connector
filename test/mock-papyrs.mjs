@@ -11,7 +11,8 @@ const pages = {
   P2: { id: "P2", slug: "Zagreb-Salaries", title: "Zagreb Salaries", category: "HR/Confidential", permissions: { U1: "view", U2: "no access" }, json: [[{ classname: "Paragraph", id: "w2", text: "SECRET salary table" }], []] },
   // Pages on the members-only "sales" subsite: a hub with a navigation widget, and the page it links to.
   P8: { id: "P8", subsite: "sales", slug: "Trial-set-up-Trial-extension", title: "Trial set-up / Trial extension", category: "Main", permissions: { U1: "edit", U2: "view" }, json: [[{ classname: "Paragraph", id: "w8", text: "To set up a trial, open the admin panel." }], []] },
-  P9: { id: "P9", subsite: "sales", slug: "Sales-Wiki", title: "Sales Wiki", category: "Main", permissions: { U1: "view", U2: "view" }, json: [[{ classname: "Heading", id: "w9", text: "Trials" }, { classname: "Navigation", id: "n9", pages: [{ title: "Trial set-up / Trial extension", url: "/@sales/Trial-set-up-Trial-extension" }] }, { classname: "Paragraph", id: "w10", text: "See also pricing.", html: 'See also <a href="/@sales/Pricing">pricing</a>.' }], []] },
+  P9: { id: "P9", subsite: "sales", slug: "Sales-Wiki", title: "Sales Wiki", category: "Main", permissions: { U1: "view", U2: "view" }, json: [[{ classname: "Heading", id: "w9", text: "Trials" }, { classname: "Navigation", id: "n9", pages: [{ title: "Trial set-up / Trial extension", url: "/@sales/Trial-set-up-Trial-extension" }] }, { classname: "Paragraph", id: "w10", text: "See also pricing.", html: 'See also <a href="/@sales/Pricing">pricing</a>.' }, { classname: "Heading", id: "w11", text: "User Accounts" }, { classname: "Navigation", id: "n11", settings: { style: "list" } }], []] },
+  P10: { id: "P10", subsite: "sales", slug: "Adding-a-user", title: "Adding a user", category: "Main/General - User Account", permissions: { U1: "view" }, json: [[], []] },
 };
 const subsiteMembers = { sales: ["U1"] };
 let n = 3;
