@@ -135,6 +135,12 @@ r = await call(alice, "papyrs_apply_reviewed_change", { review_id: rid, approval
 assert.match(r.text, /No pending review/);
 console.log("applied once after approval, cannot be applied twice ✓");
 
+r = await call(alice, "papyrs_search", { query: "salary", subsite: "sales" });
+assert.ok(!r.isError, r.text);
+r = await call(alice, "papyrs_read_page", { page: "https://ch-aviation.papyrs.com/@sales/Company-Handbook" });
+assert.match(r.text, /Company Handbook/);
+console.log("subsite argument and @subsite URLs work ✓");
+
 console.log("Connecting Carol (Limited User, no People Directory access)...");
 const carol = await connect("carol@example.com", "tok-carol");
 const carolTools = (await mcp(carol, "tools/list")).tools.map((t) => t.name);
