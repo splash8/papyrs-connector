@@ -4,10 +4,12 @@ import http from "node:http";
 const users = {
   "tok-alice": { id: "U1", attributes: { Name: "Alice Zagreb", Email: "alice@ch-aviation.com", Group: "Zagreb", Position: "Editor" }, role_id: "normal", subgroup_id: "SG-ZG" },
   "tok-carol": { id: "U3", attributes: { Name: "Carol Client", Email: "carol@example.com" }, role_id: "limited", subgroup_id: "SG-EXT" },
+  // Dave is like everyone on the real site: Papyrs refuses every ID of his in a new page's permissions.
+  "tok-dave": { id: "U4", noPerms: true, attributes: { Name: "Dave Dublin", Email: "dave@ch-aviation.com" }, role_id: "normal", subgroup_id: "SG-DUB" },
   "tok-bob": { id: "U2", attributes: { Name: "Bob Belgrade", Email: "bob@ch-aviation.com", Group: "Belgrade", Position: "Analyst" }, role_id: "normal", subgroup_id: "SG-BG" },
 };
 const pages = {
-  P1: { id: "P1", slug: "Company-Handbook", title: "Company Handbook", category: "HR", permissions: { U1: "edit", U2: "view", U3: "view" }, json: [[{ classname: "Paragraph", id: "w1", text: "Holidays: 25 days." }], []] },
+  P1: { id: "P1", slug: "Company-Handbook", title: "Company Handbook", category: "HR", permissions: { U1: "edit", U2: "view", U3: "view", U4: "edit" }, json: [[{ classname: "Paragraph", id: "w1", text: "Holidays: 25 days." }], []] },
   P2: { id: "P2", slug: "Zagreb-Salaries", title: "Zagreb Salaries", category: "HR/Confidential", permissions: { U1: "view", U2: "no access" }, json: [[{ classname: "Paragraph", id: "w2", text: "SECRET salary table" }], []] },
   // Pages on the members-only "sales" subsite: a hub with a navigation widget, and the page it links to.
   P8: { id: "P8", subsite: "sales", slug: "Trial-set-up-Trial-extension", title: "Trial set-up / Trial extension", category: "Main", permissions: { U1: "edit", U2: "view" }, json: [[{ classname: "Paragraph", id: "w8", text: "To set up a trial, open the admin panel." }], []] },
@@ -65,7 +67,7 @@ http
     }
     if (path === "/pages/create/") {
       const b = JSON.parse(body);
-      const valid = new Set(Object.values(users).map(subId));
+      const valid = new Set(Object.values(users).filter((x) => !x.noPerms).map(subId));
       const bad = Object.keys({ ...(b.permissions ?? {}), ...(b.notifications ?? {}) }).find((k) => !valid.has(k));
       if (bad) return send(400, { error: `User with ID <${bad}> not found in your site`, status: 400 });
       const id = "P" + n++;

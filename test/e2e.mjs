@@ -178,6 +178,23 @@ r = await call(bob, "papyrs_read_page", { page: "P8" });
 assert.ok(r.isError && /any subsite you can access/.test(r.text), r.text);
 console.log("bare page IDs from other subsites work for reading and proposing; non-members still refused ✓");
 
+// Dave: Papyrs refuses private pages for him. Proposals still work (no review page), nothing public is created.
+const dave = await connect("dave@ch-aviation.com", "tok-dave");
+r = await call(dave, "papyrs_draft_new_page", { title: "Dave test", content_markdown: "Hello" });
+assert.ok(!r.isError && /Nothing was created/.test(r.text), r.text);
+r = await call(alice, "papyrs_list_pages", { title_contains: "Dave test" });
+assert.match(r.text, /No matching pages/);
+r = await call(dave, "papyrs_propose_change", { page: "P1", change_type: "add_text", content: "Dublin office closes at 17:00." });
+assert.ok(!r.isError && /no review page/.test(r.text) && /Dublin office closes/.test(r.text), r.text);
+const rid3 = r.text.match(/Proposal (\w+) saved/)[1];
+r = await call(dave, "papyrs_read_page", { page: "P1" });
+assert.doesNotMatch(r.text, /Dublin office closes/);
+r = await call(dave, "papyrs_apply_reviewed_change", { review_id: rid3, approval_statement: "yes, apply " + rid3 });
+assert.match(r.text, /Applied review/);
+r = await call(dave, "papyrs_read_page", { page: "P1" });
+assert.match(r.text, /Dublin office closes at 17:00/);
+console.log("when Papyrs refuses private pages: no draft page, proposal still gated by approval ✓");
+
 console.log("Connecting Carol (Limited User, no People Directory access)...");
 const carol = await connect("carol@example.com", "tok-carol");
 const carolTools = (await mcp(carol, "tools/list")).tools.map((t) => t.name);
