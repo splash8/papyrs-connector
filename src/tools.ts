@@ -107,7 +107,7 @@ export function buildServer(env: Env, props: Props): McpServer {
    * Run fn on each subsite (a few at a time) and collect what came back. Subsites the person can't open
    * are skipped silently; ones cut off by the rate limit or the time budget are reported so Claude can retry.
    */
-  async function acrossSubsites<T>(only: string | undefined, fn: (c: PapyrsClient) => Promise<T>) {
+  async function acrossSubsites<T>(only: string | undefined, fn: (c: PapyrsClient) => Promise<T>, rememberRefusals = true) {
     if (only) return { results: [[only.replace(/^@/, ""), await fn(clientFor(only))]] as [string, T][], notSearched: [] as string[] };
     const known = new Set((await env.REVIEW_KV.get<string[]>(noAccessKey, "json")) ?? []);
     const queue = subsites.map(([s]) => s).filter((s) => !known.has(s));
@@ -126,8 +126,11 @@ export function buildServer(env: Env, props: Props): McpServer {
           results.push([s, await fn(new PapyrsClient(env.PAPYRS_BASE_URL, props.papyrsToken, s, false))]);
         } catch (e) {
           if (e instanceof PapyrsError && (e.status === 403 || e.status === 404)) {
-            known.add(s);
-            refused = true;
+            // A 404 while looking up one page only means "not in this subsite", so only searches remember refusals.
+            if (rememberRefusals) {
+              known.add(s);
+              refused = true;
+            }
           } else notSearched.push(s);
         }
       }
@@ -164,18 +167,45 @@ export function buildServer(env: Env, props: Props): McpServer {
 
   /**
    * Accepts a page ID, a full Papyrs URL, or a slug, and returns the page ID plus the subsite it lives in.
-   * A URL's "/@<subsite>/" wins over the subsite argument. Costs one extra call only for URLs/slugs.
+   * A URL's "/@<subsite>/" wins over the subsite argument. A bare ID or slug with no subsite is looked up in the
+   * default subsite first, then in every other subsite the person can open (Claude often has only the ID).
    */
-  async function resolvePage(ref: string, subsite?: string): Promise<{ id: string; subsite: string; client: PapyrsClient }> {
+  async function resolvePage(
+    ref: string,
+    subsite?: string,
+  ): Promise<{ id: string; subsite: string; client: PapyrsClient; page?: PapyrsPage }> {
     const r = ref.trim();
-    const s = (r.match(/\/@([^/?#]+)/)?.[1] ?? subsite ?? "").trim() || defaultSubsite;
+    const named = (r.match(/\/@([^/?#]+)/)?.[1] ?? subsite ?? "").trim();
+    const s = named || defaultSubsite;
     const client = clientFor(s);
-    if (!r.includes("/") && !r.includes("-") && r.length <= 8) return { id: r, subsite: s, client };
+    const isId = !r.includes("/") && !r.includes("-") && r.length <= 8;
     const slug = r.replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop() ?? r;
-    const pages = await client.allPages();
-    const hit = pages.find((p) => p.slug === slug || p.url.replace(/\/+$/, "").endsWith("/" + slug) || p.id === slug);
-    if (!hit) throw new PapyrsError(404, `No page matching "${ref}" in subsite "${s}" that you can access.`);
-    return { id: hit.id, subsite: s, client };
+    const findIn = (pages: PapyrsPageSummary[]) =>
+      pages.find((p) => p.slug === slug || p.url.replace(/\/+$/, "").endsWith("/" + slug) || p.id === slug);
+    try {
+      if (isId) return { id: r, subsite: s, client, page: await client.getPage(r) };
+      const hit = findIn(await client.allPages());
+      if (hit) return { id: hit.id, subsite: s, client };
+      throw new PapyrsError(404, `No page matching "${ref}" in subsite "${s}" that you can access.`);
+    } catch (e) {
+      if (named || !(e instanceof PapyrsError && e.status === 404)) throw e;
+    }
+    const { results, notSearched } = await acrossSubsites(
+      undefined,
+      async (c) => {
+        if (isId) return { id: r, page: await c.getPage(r) as PapyrsPage | undefined };
+        const hit = findIn(await c.allPages());
+        if (!hit) throw new PapyrsError(404, "not here");
+        return { id: hit.id, page: undefined as PapyrsPage | undefined };
+      },
+      false,
+    );
+    const found = results.find(([x]) => x !== s);
+    if (found) return { id: found[1].id, subsite: found[0], client: clientFor(found[0]), page: found[1].page };
+    throw new PapyrsError(
+      404,
+      `No page matching "${ref}" in any subsite you can access: it doesn't exist, or you have no access to it in Papyrs.` + (notSearched.length ? ` Not checked (rate limit): ${notSearched.join(", ")}.` : ""),
+    );
   }
 
   /**
@@ -299,7 +329,7 @@ export function buildServer(env: Env, props: Props): McpServer {
     },
     wrap(async ({ page, subsite }) => {
       const ref = await resolvePage(page, subsite);
-      const p = await ref.client.getPage(ref.id);
+      const p = ref.page ?? (await ref.client.getPage(ref.id));
       const resolved = await resolveNavigation(p, ref.client);
       return text(
         `# ${p.title}\nSubsite: ${ref.subsite} | folder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p, (l) => absolute(l, ref.subsite), resolved)}`,
@@ -369,7 +399,7 @@ export function buildServer(env: Env, props: Props): McpServer {
     },
     wrap(async ({ page, subgroup, subsite }) => {
       const ref = await resolvePage(page, subsite);
-      const p = await ref.client.getPage(ref.id);
+      const p = ref.page ?? (await ref.client.getPage(ref.id));
       if (!p.permissions) return text("Papyrs did not return permissions for this page to your account.");
       const people = await papyrs.people();
       const sg = subgroup?.toLowerCase();
@@ -457,7 +487,7 @@ export function buildServer(env: Env, props: Props): McpServer {
     },
     wrap(async ({ page, change_type, content, reason, subsite }) => {
       const ref = await resolvePage(page, subsite);
-      const target: PapyrsPage = await ref.client.getPage(ref.id);
+      const target: PapyrsPage = ref.page ?? (await ref.client.getPage(ref.id));
       const myLevel = target.permissions?.[props.papyrsUserId];
       if (change_type !== "post_comment" && myLevel && myLevel !== "edit")
         return text(`${props.name} has "${myLevel}" access to "${target.title}", not edit, so this change cannot be applied later. Nothing was created.`);

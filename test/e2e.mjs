@@ -162,6 +162,22 @@ assert.match(r.text, /pricing — http:\/\/localhost:9000\/@sales\/Pricing/);
 assert.match(r.text, /likely pages[\s\S]*Adding a user — https:\/\/ch-aviation\.papyrs\.com\/@sales\/Adding-a-user/);
 console.log("navigation widget links come back when reading a page, folder-driven ones matched by heading ✓");
 
+// A bare page ID from another subsite (Claude often has only the ID) is found in that subsite.
+r = await call(alice, "papyrs_read_page", { page: "P8" });
+assert.match(r.text, /Subsite: sales/);
+r = await call(alice, "papyrs_propose_change", { page: "P8", change_type: "add_text", content: "Trials last 14 days." });
+assert.ok(!r.isError && /Review draft \w+ created/.test(r.text), r.text);
+const rid2 = r.text.match(/Review draft (\w+)/)[1];
+r = await call(alice, "papyrs_apply_reviewed_change", { review_id: rid2, approval_statement: "yes apply " + rid2 });
+assert.match(r.text, /Applied review/);
+r = await call(alice, "papyrs_read_page", { page: "P8", subsite: "sales" });
+assert.match(r.text, /Trials last 14 days/);
+r = await call(alice, "papyrs_search", { query: "trial" });
+assert.match(r.text, /\[sales\]/, "a page lookup must not mark sales as no-access");
+r = await call(bob, "papyrs_read_page", { page: "P8" });
+assert.ok(r.isError && /any subsite you can access/.test(r.text), r.text);
+console.log("bare page IDs from other subsites work for reading and proposing; non-members still refused ✓");
+
 console.log("Connecting Carol (Limited User, no People Directory access)...");
 const carol = await connect("carol@example.com", "tok-carol");
 const carolTools = (await mcp(carol, "tools/list")).tools.map((t) => t.name);
