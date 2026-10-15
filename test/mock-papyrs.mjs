@@ -16,8 +16,11 @@ const pages = {
 };
 const subsiteMembers = { sales: ["U1"] };
 let n = 3;
+// Like the real ch-aviation site: a subsite knows its members under subsite-level IDs ("H" + site ID), and
+// page permissions there only accept those. Site-wide directory IDs are refused on page creation.
+const subId = (u) => "H" + u.id.slice(1);
 const can = (u, p, lvl) => {
-  const l = p.permissions[u.id] ?? "no access";
+  const l = p.permissions[u.id] ?? p.permissions[subId(u)] ?? "no access";
   return lvl === "view" ? l !== "no access" : l === "edit";
 };
 const full = (p) => ({ ...p, url: `https://ch-aviation.papyrs.com/@${p.subsite ?? "home"}/${p.slug}`, created_by: "x", updated_at: "2026-10-01T00:00:00Z" });
@@ -42,7 +45,10 @@ http
     const path = url.pathname.replace(/^\/@[^/]+/, "").replace("/api/v1", "");
     const here = (p) => (p.subsite ?? "home") === (sub ?? "home");
     let m;
-    if (path === "/people/all/") return u.role_id === "limited" ? send(403, { error: "No access to the People Directory", status: 403 }) : send(200, Object.values(users));
+    if (path === "/people/all/") {
+      if (u.role_id === "limited") return send(403, { error: "No access to the People Directory", status: 403 });
+      return send(200, sub ? Object.values(users).map((x) => ({ ...x, id: subId(x) })) : Object.values(users));
+    }
     if (path === "/pages/all/") return send(200, Object.values(pages).filter((p) => here(p) && can(u, p, "view")).map(({ json, permissions, ...r }) => full(r)));
     if ((m = path.match(/^\/pages\/get\/(\w+)\/$/))) {
       const p = pages[m[1]];
@@ -59,6 +65,9 @@ http
     }
     if (path === "/pages/create/") {
       const b = JSON.parse(body);
+      const valid = new Set(Object.values(users).map(subId));
+      const bad = Object.keys({ ...(b.permissions ?? {}), ...(b.notifications ?? {}) }).find((k) => !valid.has(k));
+      if (bad) return send(400, { error: `User with ID <${bad}> not found in your site`, status: 400 });
       const id = "P" + n++;
       pages[id] = { id, subsite: sub ?? "home", slug: b.title.replace(/\W+/g, "-"), title: b.title, category: b.category, permissions: b.permissions ?? {}, json: b.json.map((col) => col.map((w, i) => ({ ...w, id: id + "w" + i, text: w.val.replace(/<[^>]+>/g, "") }))) };
       return send(200, full(pages[id]));

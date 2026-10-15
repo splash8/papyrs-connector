@@ -373,13 +373,15 @@ export function buildServer(env: Env, props: Props): McpServer {
         (p) => !q || Object.values(p.attributes).some((v) => String(v).toLowerCase().includes(q)) || p.subgroup_id?.toLowerCase() === q,
       );
       if (!people.length) return text("Nobody matches.");
+      // With a single match, include the raw directory record: field names vary between Papyrs sites.
+      const raw = people.length === 1 ? `\n\nRaw directory record: ${JSON.stringify(people[0]).slice(0, 1500)}` : "";
       return text(
         people
           .map(
             (p) =>
               `- ${p.attributes.Name} (user ID ${p.id}) | ${p.attributes.Position || "-"} | ${p.attributes.Email || "-"} | group: ${p.attributes.Group || "-"} (subgroup ${p.subgroup_id ?? "-"}) | role: ${p.role_id}${p.waiting_invite ? " | invite pending" : ""}`,
           )
-          .join("\n"),
+          .join("\n") + raw,
       );
     }),
   );
@@ -423,16 +425,68 @@ export function buildServer(env: Env, props: Props): McpServer {
   if (!props.papyrsUserId) return server;
 
   const reviewers = reviewersOf(env).filter((id) => id !== props.papyrsUserId);
-  const draftPermissions = () => {
-    const perms: Record<string, string> = { [props.papyrsUserId]: "edit" };
+  const draftPermissions = (me: string) => {
+    const perms: Record<string, string> = { [me]: "edit" };
     for (const r of reviewers) perms[r] = "edit";
     return perms;
   };
-  const draftNotifications = () => {
-    const n: Record<string, string> = { [props.papyrsUserId]: "on" };
+  const draftNotifications = (me: string) => {
+    const n: Record<string, string> = { [me]: "on" };
     for (const r of reviewers) n[r] = "on";
     return n;
   };
+
+  /**
+   * Create a private draft in the default subsite. Papyrs has refused the site-wide directory ID with
+   * "User with ID <x> not found in your site", so on that error try, in order: the same ID without
+   * notifications, then the ID(s) the subsite's own directory has for this person's email. The page is
+   * never created without the permission that keeps it private. A working ID is remembered per person.
+   */
+  const draftIdKey = `draftid:${defaultSubsite}:${props.email}`;
+  async function createDraft(body: { title: string; category: string; json: unknown }) {
+    const remembered = await env.REVIEW_KV.get<{ id: string; notify: boolean }>(draftIdKey, "json");
+    const attempt = (id: string, notify: boolean) =>
+      papyrs.createPage({ ...body, permissions: draftPermissions(id), ...(notify ? { notifications: draftNotifications(id) } : {}) });
+    const userNotFound = (e: unknown) => e instanceof PapyrsError && e.status === 400 && /not found in your site/i.test(e.message);
+    const tries: { id: string; notify: boolean }[] = remembered ? [remembered] : [];
+    tries.push({ id: props.papyrsUserId, notify: true }, { id: props.papyrsUserId, notify: false });
+    let lastError: unknown;
+    let lookedUp = false;
+    for (let i = 0; i < tries.length; i++) {
+      const t = tries[i];
+      const duplicate = tries.findIndex((x) => x.id === t.id && x.notify === t.notify) !== i;
+      if (!duplicate) {
+        try {
+          const created = await attempt(t.id, t.notify);
+          if (!remembered || remembered.id !== t.id || remembered.notify !== t.notify)
+            await env.REVIEW_KV.put(draftIdKey, JSON.stringify(t), { expirationTtl: 60 * 60 * 24 * 30 });
+          return created;
+        } catch (e) {
+          if (!userNotFound(e)) throw e;
+          lastError = e;
+        }
+      }
+      if (i === tries.length - 1 && !lookedUp) {
+        lookedUp = true;
+        try {
+          const me = (await papyrs.subsitePeople()).find((p) => (p.attributes?.Email ?? "").trim().toLowerCase() === props.email);
+          const ids = me
+            ? Object.entries(me as unknown as Record<string, unknown>)
+                .filter(([k, v]) => /id$/i.test(k) && typeof v === "string" && v)
+                .map(([, v]) => v as string)
+            : [];
+          for (const id of ids) tries.push({ id, notify: true }, { id, notify: false });
+        } catch {
+          /* no subsite directory either: fall through to the error */
+        }
+      }
+    }
+    throw new PapyrsError(
+      400,
+      `Papyrs did not accept ${props.name}'s user ID for the draft's private permissions (${(lastError as Error)?.message}). ` +
+        "Nothing was created. Ask the connector's maintainer to check which user ID Papyrs expects for page permissions.",
+    );
+  }
   const banner = (what: string) => ({
     classname: "Heading",
     val: escapeHtml(`⚠ NEEDS REVIEW — ${what}. Drafted with Claude for ${props.name} on ${new Date().toISOString().slice(0, 10)}. Not visible to anyone else until shared.`),
@@ -455,12 +509,10 @@ export function buildServer(env: Env, props: Props): McpServer {
     },
     wrap(async ({ title, content_markdown, intended_folder }) => {
       const widgets = [banner(`draft page${intended_folder ? ` intended for "${intended_folder}"` : ""}`), ...markdownToWidgets(content_markdown)];
-      const created = await papyrs.createPage({
+      const created = await createDraft({
         title: `[DRAFT] ${title}`,
         category: intended_folder ? `${draftFolder}/${intended_folder}` : draftFolder,
         json: [widgets, []],
-        permissions: draftPermissions(),
-        notifications: draftNotifications(),
       });
       return text(
         `Draft created and flagged for review: ${created.url}\nOnly ${props.name}${reviewers.length ? " and the reviewers" : ""} can see it. ` +
@@ -493,7 +545,7 @@ export function buildServer(env: Env, props: Props): McpServer {
         return text(`${props.name} has "${myLevel}" access to "${target.title}", not edit, so this change cannot be applied later. Nothing was created.`);
       const id = crypto.randomUUID().slice(0, 8);
       const label = { add_text: "add this text", add_heading: "add this heading", post_comment: "post this comment" }[change_type];
-      const draft = await papyrs.createPage({
+      const draft = await createDraft({
         title: `[REVIEW ${id}] ${target.title}`,
         category: `${draftFolder}/Proposed changes`,
         json: [
@@ -505,8 +557,6 @@ export function buildServer(env: Env, props: Props): McpServer {
           ],
           [],
         ],
-        permissions: draftPermissions(),
-        notifications: draftNotifications(),
       });
       const pending: PendingChange = {
         id,
