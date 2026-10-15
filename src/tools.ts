@@ -459,6 +459,7 @@ export function buildServer(env: Env, props: Props): McpServer {
     tries.push({ id: props.papyrsUserId, notify: true }, { id: props.papyrsUserId, notify: false });
     let lastError: unknown;
     let lookedUp = false;
+    const log: string[] = [];
     for (let i = 0; i < tries.length; i++) {
       const t = tries[i];
       const duplicate = tries.findIndex((x) => x.id === t.id && x.notify === t.notify) !== i;
@@ -469,6 +470,7 @@ export function buildServer(env: Env, props: Props): McpServer {
             await env.REVIEW_KV.put(draftIdKey, JSON.stringify(t), { expirationTtl: 60 * 60 * 24 * 30 });
           return created;
         } catch (e) {
+          log.push(`${t.id}${t.notify ? "+notifications" : ""}: ${(e as Error).message}`);
           if (!userNotFound(e)) throw e;
           lastError = e;
         }
@@ -482,16 +484,20 @@ export function buildServer(env: Env, props: Props): McpServer {
                 .filter(([k, v]) => /id$/i.test(k) && typeof v === "string" && v)
                 .map(([, v]) => v as string)
             : [];
+          log.push(`subsite directory: ${me ? `found, IDs ${ids.join(", ") || "none"}` : "person not found by email"}`);
           for (const id of ids) tries.push({ id, notify: true }, { id, notify: false });
-        } catch {
-          /* no subsite directory either: fall through to the error */
+        } catch (e) {
+          log.push(`subsite directory: ${(e as Error).message}`);
         }
+        // Some Papyrs sites may key permissions by email instead of user ID.
+        tries.push({ id: props.email, notify: false });
       }
     }
     throw new PapyrsError(
       400,
       `Papyrs did not accept ${props.name}'s user ID for the draft's private permissions (${(lastError as Error)?.message}). ` +
-        "Nothing was created. Ask the connector's maintainer to check which user ID Papyrs expects for page permissions.",
+        `Nothing was created. Attempts: ${log.join(" | ")}. ` +
+        "Ask the connector's maintainer to check which user ID Papyrs expects for page permissions.",
     );
   }
   const banner = (what: string) => ({
