@@ -126,6 +126,10 @@ export class PapyrsClient {
       throw e;
     }
   }
+  /** The directory as this subsite sees it (may carry different IDs from the site-wide one). */
+  subsitePeople() {
+    return this.call<PapyrsPerson[]>("GET", "/people/all/");
+  }
   createPage(body: { title: string; json: unknown; category?: string; permissions?: Record<string, string>; notifications?: Record<string, string> }) {
     return this.call<PapyrsPage>("POST", "/pages/create/", { body });
   }
