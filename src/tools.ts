@@ -132,7 +132,8 @@ export function buildServer(env: Env, props: Props): McpServer {
         }
       }
     };
-    await Promise.all([worker(), worker(), worker()]);
+    // ch-aviation's raised limit took ~70 requests a minute without a 429 (Oct 2026), so 8 at a time is safe.
+    await Promise.all(Array.from({ length: 8 }, worker));
     if (refused) await env.REVIEW_KV.put(noAccessKey, JSON.stringify([...known]), { expirationTtl: 60 * 60 * 24 });
     const order = (s: string) => subsites.findIndex(([x]) => x === s);
     results.sort((a, b) => order(a[0]) - order(b[0]));
@@ -150,7 +151,7 @@ export function buildServer(env: Env, props: Props): McpServer {
       instructions:
         `You are connected to the ch-aviation Papyrs intranet as ${props.name}. Every call runs with ${props.name}'s own Papyrs token, ` +
         "so results contain only what this person may see; never suggest content exists beyond what the tools return. " +
-        "Papyrs allows about 6 API calls per minute, so prefer papyrs_search first and read only the pages you need." +
+        "Papyrs rate-limits its API, so prefer papyrs_search first and read only the pages you need." +
         subsiteHelp +
         " " +
         "Nothing is written to a live page directly: write tools create a private draft flagged for review, and a change is " +

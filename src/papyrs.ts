@@ -69,7 +69,7 @@ export class PapyrsClient {
     url.searchParams.set("auth_token", this.token);
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v);
 
-    // Papyrs allows only 6 requests per 60 seconds by default. Wait and retry once
+    // Papyrs rate-limits the API (6 requests per 60 seconds by default; ch-aviation has a higher limit). Wait and retry once
     // instead of failing the whole question on the first 429.
     for (let attempt = 0; attempt < 2; attempt++) {
       const res = await fetch(url.toString(), {
@@ -93,7 +93,7 @@ export class PapyrsClient {
         if (res.status === 403)
           msg = `Papyrs refused this for your account${where}: ${msg}` +
             (where ? ". Usually this means the person is not a member of that subsite, or API access is off for it." : "");
-        if (res.status === 429) msg = "Papyrs rate limit reached (6 requests per minute). Wait a minute and try again.";
+        if (res.status === 429) msg = "Papyrs rate limit reached. Wait a minute and try again.";
         throw new PapyrsError(res.status, msg.slice(0, 500));
       }
       return (text ? JSON.parse(text) : null) as T;

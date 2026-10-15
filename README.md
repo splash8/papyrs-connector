@@ -26,7 +26,7 @@ Read tools: `papyrs_search`, `papyrs_list_pages`, `papyrs_read_page`, `papyrs_fo
 ## Before you start
 
 1. **Papyrs API access.** In Papyrs go to *Site Settings → Integrations & SSO → API* and request API access. Papyrs enables it per site.
-2. **Rate limit.** By default Papyrs allows **6 API requests per 60 seconds**. The docs don't say whether this limit applies per token or to the whole site. If it applies to the whole site, 80 people will hit it constantly. Ask Papyrs support to confirm and to raise the limit for your site. The connector waits and retries once when Papyrs returns 429.
+2. **Rate limit.** By default Papyrs allows **6 API requests per 60 seconds**. The docs don't say whether this limit applies per token or to the whole site. If it applies to the whole site, 80 people will hit it constantly. Ask Papyrs support to confirm and to raise the limit for your site. The connector waits and retries once when Papyrs returns 429. ch-aviation has a raised limit: a test in October 2026 sent about 70 requests in one minute without being limited, so searches across all subsites run 8 subsites at a time.
 3. **Tokens for 80 people.** A Papyrs administrator generates a personal token for each person (*Site Settings → Integrations & SSO → Generate Token*) and sends it to that person privately. People must not share tokens. Revoking a token in Papyrs immediately cuts that person's Claude access.
 4. **People Directory.** Signing in looks up the person's Papyrs user ID by email in the People Directory. Limited Users can't open it, so they connect **read-only**: they can search and read what Papyrs lets them see, but can't draft or propose changes (without their user ID a draft can't be made private to them).
 
