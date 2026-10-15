@@ -75,6 +75,15 @@ node test/e2e.mjs                  # full OAuth sign-in for both users + all too
 
 The test checks that a user can't see, read, list, edit or apply changes to another subgroup's restricted page. It also checks that drafts stay private and that live pages only change after an explicit approval.
 
+## Known issue: private draft pages (ch-aviation, October 2026)
+
+On ch-aviation's Papyrs, creating a page through the API with `permissions` fails for every user ID ("User with ID <FMkL> not found in your site"), even though the IDs come from the People Directory and match `created_by` on existing pages. Until Papyrs explains this:
+
+- `papyrs_draft_new_page` creates nothing and returns the text for the person to create the page themselves.
+- `papyrs_propose_change` keeps the proposal without a review page and shows it in chat. The live page still changes only after explicit approval.
+
+The connector never creates a page without private permissions. It re-checks every 6 hours whether Papyrs accepts them.
+
 ## Limits of the Papyrs API
 
 - The API can't edit or delete existing text on a page. It can only add text and headings or post comments, so "propose a change" means "add".

@@ -39,6 +39,9 @@ interface PendingChange {
   createdAt: string;
 }
 
+/** Papyrs refused every way of making a new page private to this person. */
+class DraftPermissionError extends PapyrsError {}
+
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 const fail = (e: unknown) => ({
   isError: true,
@@ -450,7 +453,11 @@ export function buildServer(env: Env, props: Props): McpServer {
    * never created without the permission that keeps it private. A working ID is remembered per person.
    */
   const draftIdKey = `draftid:${defaultSubsite}:${props.email}`;
+  const refusedKey = `draftrefused:${defaultSubsite}:${props.email}`;
   async function createDraft(body: { title: string; category: string; json: unknown }) {
+    // Don't spend four API calls per proposal once Papyrs has refused them all; check again after 6 hours.
+    const refusedBefore = await env.REVIEW_KV.get(refusedKey);
+    if (refusedBefore) throw new DraftPermissionError(400, refusedBefore);
     const remembered = await env.REVIEW_KV.get<{ id: string; notify: boolean }>(draftIdKey, "json");
     const attempt = (id: string, notify: boolean) =>
       papyrs.createPage({ ...body, permissions: draftPermissions(id), ...(notify ? { notifications: draftNotifications(id) } : {}) });
@@ -493,12 +500,11 @@ export function buildServer(env: Env, props: Props): McpServer {
         tries.push({ id: props.email, notify: false });
       }
     }
-    throw new PapyrsError(
-      400,
-      `Papyrs did not accept ${props.name}'s user ID for the draft's private permissions (${(lastError as Error)?.message}). ` +
-        `Nothing was created. Attempts: ${log.join(" | ")}. ` +
-        "Ask the connector's maintainer to check which user ID Papyrs expects for page permissions.",
-    );
+    const message =
+      `Papyrs did not accept ${props.name}'s user ID for a private page (${(lastError as Error)?.message}). ` +
+      `Attempts: ${log.join(" | ")}.`;
+    await env.REVIEW_KV.put(refusedKey, message, { expirationTtl: 60 * 60 * 6 });
+    throw new DraftPermissionError(400, message);
   }
   const banner = (what: string) => ({
     classname: "Heading",
@@ -522,11 +528,22 @@ export function buildServer(env: Env, props: Props): McpServer {
     },
     wrap(async ({ title, content_markdown, intended_folder }) => {
       const widgets = [banner(`draft page${intended_folder ? ` intended for "${intended_folder}"` : ""}`), ...markdownToWidgets(content_markdown)];
-      const created = await createDraft({
-        title: `[DRAFT] ${title}`,
-        category: intended_folder ? `${draftFolder}/${intended_folder}` : draftFolder,
-        json: [widgets, []],
-      });
+      let created: PapyrsPage;
+      try {
+        created = await createDraft({
+          title: `[DRAFT] ${title}`,
+          category: intended_folder ? `${draftFolder}/${intended_folder}` : draftFolder,
+          json: [widgets, []],
+        });
+      } catch (e) {
+        if (!(e instanceof DraftPermissionError)) throw e;
+        return text(
+          "Nothing was created: Papyrs on this site does not let the connector create a page that only you can see, " +
+            "and the connector never creates a page that others could see unreviewed. " +
+            "Give the person the drafted text so they can create the page in Papyrs themselves.\n\n" +
+            `Details: ${e.message}`,
+        );
+      }
       return text(
         `Draft created and flagged for review: ${created.url}\nOnly ${props.name}${reviewers.length ? " and the reviewers" : ""} can see it. ` +
           `To publish: open it in Papyrs, review, remove the banner, set permissions${intended_folder ? ` and move it to "${intended_folder}"` : ""}.`,
@@ -558,7 +575,11 @@ export function buildServer(env: Env, props: Props): McpServer {
         return text(`${props.name} has "${myLevel}" access to "${target.title}", not edit, so this change cannot be applied later. Nothing was created.`);
       const id = crypto.randomUUID().slice(0, 8);
       const label = { add_text: "add this text", add_heading: "add this heading", post_comment: "post this comment" }[change_type];
-      const draft = await createDraft({
+      // The private review page is a convenience: the safety gate is that nothing changes on the live page
+      // until the person approves in chat. If Papyrs refuses private pages, keep the proposal without one.
+      let draft: PapyrsPage | undefined;
+      try {
+        draft = await createDraft({
         title: `[REVIEW ${id}] ${target.title}`,
         category: `${draftFolder}/Proposed changes`,
         json: [
@@ -570,7 +591,10 @@ export function buildServer(env: Env, props: Props): McpServer {
           ],
           [],
         ],
-      });
+        });
+      } catch (e) {
+        if (!(e instanceof DraftPermissionError)) throw e;
+      }
       const pending: PendingChange = {
         id,
         authorId: props.papyrsUserId,
@@ -582,13 +606,17 @@ export function buildServer(env: Env, props: Props): McpServer {
         targetTitle: target.title,
         targetUrl: target.url,
         content,
-        draftPageId: draft.id,
-        draftUrl: draft.url,
+        draftPageId: draft?.id ?? "",
+        draftUrl: draft?.url ?? "",
         createdAt: new Date().toISOString(),
       };
       await env.REVIEW_KV.put(`review:${id}`, JSON.stringify(pending), { expirationTtl: 60 * 60 * 24 * 30 });
       return text(
-        `Review draft ${id} created: ${draft.url}\nThe live page "${target.title}" is unchanged. Show the person the proposed content; apply only after they explicitly approve review ${id}. Unapplied proposals expire after 30 days.`,
+        (draft
+          ? `Review draft ${id} created: ${draft.url}\n`
+          : `Proposal ${id} saved (no review page: Papyrs on this site doesn't let the connector create private pages).\n` +
+            `Proposed ${label} on "${target.title}":\n---\n${content}\n---\n`) +
+          `The live page "${target.title}" is unchanged. Show the person the proposed content; apply only after they explicitly approve review ${id}. Unapplied proposals expire after 30 days.`,
       );
     }),
   );
@@ -609,7 +637,7 @@ export function buildServer(env: Env, props: Props): McpServer {
         if (v && (v.authorId === props.papyrsUserId || v.reviewers.includes(props.papyrsUserId))) mine.push(v);
       }
       if (!mine.length) return text("Nothing waiting for review.");
-      return text(mine.map((c) => `- ${c.id}: ${c.type} on "${c.targetTitle}" by ${c.authorName}, ${c.createdAt.slice(0, 10)} — draft ${c.draftUrl}`).join("\n"));
+      return text(mine.map((c) => `- ${c.id}: ${c.type} on "${c.targetTitle}" by ${c.authorName}, ${c.createdAt.slice(0, 10)}${c.draftUrl ? ` — draft ${c.draftUrl}` : ""}`).join("\n"));
     }),
   );
 
@@ -641,7 +669,7 @@ export function buildServer(env: Env, props: Props): McpServer {
         await live.postToPage(c.targetPageId, c.content);
       }
       await env.REVIEW_KV.delete(key);
-      try {
+      if (c.draftPageId) try {
         await papyrs.addWidget(
           c.draftPageId,
           "paragraph",
@@ -668,7 +696,7 @@ export function buildServer(env: Env, props: Props): McpServer {
       if (!c) return text(`No pending review ${review_id}.`);
       if (c.authorId !== props.papyrsUserId && !c.reviewers.includes(props.papyrsUserId)) return text("Only the author or a reviewer can discard it.");
       await env.REVIEW_KV.delete(key);
-      return text(`Discarded review ${c.id}. Draft page kept at ${c.draftUrl}.`);
+      return text(`Discarded review ${c.id}.${c.draftUrl ? ` Draft page kept at ${c.draftUrl}.` : ""}`);
     }),
   );
 
