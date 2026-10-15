@@ -69,7 +69,7 @@ export class PapyrsClient {
     url.searchParams.set("auth_token", this.token);
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v);
 
-    // Papyrs allows only 6 requests per 60 seconds by default. Wait and retry once
+    // Papyrs rate-limits the API (6 requests per 60 seconds by default; ch-aviation has a higher limit). Wait and retry once
     // instead of failing the whole question on the first 429.
     for (let attempt = 0; attempt < 2; attempt++) {
       const res = await fetch(url.toString(), {
@@ -93,7 +93,7 @@ export class PapyrsClient {
         if (res.status === 403)
           msg = `Papyrs refused this for your account${where}: ${msg}` +
             (where ? ". Usually this means the person is not a member of that subsite, or API access is off for it." : "");
-        if (res.status === 429) msg = "Papyrs rate limit reached (6 requests per minute). Wait a minute and try again.";
+        if (res.status === 429) msg = "Papyrs rate limit reached. Wait a minute and try again.";
         throw new PapyrsError(res.status, msg.slice(0, 500));
       }
       return (text ? JSON.parse(text) : null) as T;
@@ -169,20 +169,46 @@ export function markdownToWidgets(md: string): { classname: "Heading" | "Paragra
   return out;
 }
 
-export function pageToText(page: PapyrsPage, absolute: (link: string) => string = (l) => l, maxChars = 40_000): string {
+export function pageToText(
+  page: PapyrsPage,
+  absolute: (link: string) => string = (l) => l,
+  resolved: Map<PapyrsWidget, { links: [string, string][]; note: string }> = new Map(),
+  maxChars = 40_000,
+): string {
   const parts: string[] = [];
   for (const column of page.json ?? []) {
     for (const w of column ?? []) {
       const links = widgetLinks(w).map(([t, u]) => `- ${t} — ${absolute(u)}`);
+      const r = resolved.get(w);
       if (w.classname === "Heading" && w.text) parts.push(`## ${w.text}`);
       else if (w.files?.length) parts.push(`[Attachments] ${w.files.map((f) => `${f.filename} (${f.url})`).join("; ")}`);
       else if (w.text) parts.push(String(w.text) + (links.length ? `\nLinks:\n${links.join("\n")}` : ""));
       else if (links.length) parts.push(`[${w.classname}]\n${links.join("\n")}`);
-      else parts.push(`[${w.classname} widget]`);
+      else if (r?.links.length) parts.push(`[${w.classname}, ${r.note}]\n${r.links.map(([t, u]) => `- ${t} — ${absolute(u)}`).join("\n")}`);
+      else parts.push(`[${w.classname} widget${widgetSettings(w)}]`);
     }
   }
   const text = parts.join("\n\n");
   return text.length > maxChars ? text.slice(0, maxChars) + "\n\n[...truncated]" : text;
+}
+
+/** A widget's own settings in short form, so an unexplained widget is at least visible. */
+export function widgetSettings(w: PapyrsWidget): string {
+  const { classname, id, ...rest } = w;
+  const json = JSON.stringify(rest);
+  return json && json !== "{}" ? `: ${json.length > 300 ? json.slice(0, 300) + "…" : json}` : "";
+}
+
+/** Plain string settings of a widget (no HTML, no URLs): folder names, page IDs and the like. */
+export function widgetStrings(w: unknown, depth = 0): string[] {
+  if (depth > 3 || w == null) return [];
+  if (typeof w === "string") return /^https?:|^\/|</.test(w) || !w.trim() ? [] : [w.trim()];
+  if (Array.isArray(w)) return w.flatMap((x) => widgetStrings(x, depth + 1));
+  if (typeof w === "object")
+    return Object.entries(w as Record<string, unknown>)
+      .filter(([k]) => k !== "classname" && k !== "id")
+      .flatMap(([, v]) => widgetStrings(v, depth + 1));
+  return [];
 }
 
 /**

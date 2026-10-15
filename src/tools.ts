@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { PapyrsClient, PapyrsError, PapyrsPage, escapeHtml, markdownToWidgets, pageToText } from "./papyrs";
+import { PapyrsClient, PapyrsError, PapyrsPage, PapyrsPageSummary, PapyrsWidget, escapeHtml, markdownToWidgets, pageToText, widgetLinks, widgetStrings } from "./papyrs";
 
 /** What the OAuth grant stores for each connected person (encrypted at rest by workers-oauth-provider). */
 export interface Props {
@@ -132,7 +132,8 @@ export function buildServer(env: Env, props: Props): McpServer {
         }
       }
     };
-    await Promise.all([worker(), worker(), worker()]);
+    // ch-aviation's raised limit took ~70 requests a minute without a 429 (Oct 2026), so 8 at a time is safe.
+    await Promise.all(Array.from({ length: 8 }, worker));
     if (refused) await env.REVIEW_KV.put(noAccessKey, JSON.stringify([...known]), { expirationTtl: 60 * 60 * 24 });
     const order = (s: string) => subsites.findIndex(([x]) => x === s);
     results.sort((a, b) => order(a[0]) - order(b[0]));
@@ -150,7 +151,7 @@ export function buildServer(env: Env, props: Props): McpServer {
       instructions:
         `You are connected to the ch-aviation Papyrs intranet as ${props.name}. Every call runs with ${props.name}'s own Papyrs token, ` +
         "so results contain only what this person may see; never suggest content exists beyond what the tools return. " +
-        "Papyrs allows about 6 API calls per minute, so prefer papyrs_search first and read only the pages you need." +
+        "Papyrs rate-limits its API, so prefer papyrs_search first and read only the pages you need." +
         subsiteHelp +
         " " +
         "Nothing is written to a live page directly: write tools create a private draft flagged for review, and a change is " +
@@ -175,6 +176,56 @@ export function buildServer(env: Env, props: Props): McpServer {
     const hit = pages.find((p) => p.slug === slug || p.url.replace(/\/+$/, "").endsWith("/" + slug) || p.id === slug);
     if (!hit) throw new PapyrsError(404, `No page matching "${ref}" in subsite "${s}" that you can access.`);
     return { id: hit.id, subsite: s, client };
+  }
+
+  /**
+   * Navigation widgets don't carry their links: Papyrs fills them from a folder (or a list of pages) when it
+   * renders the page. Match each one against the subsite's page list (one extra API call, only when needed):
+   * first by the widget's own settings (a folder name or page IDs), then by the heading right above it.
+   */
+  async function resolveNavigation(p: PapyrsPage, client: PapyrsClient) {
+    const resolved = new Map<PapyrsWidget, { links: [string, string][]; note: string }>();
+    const navs: { w: PapyrsWidget; heading?: string }[] = [];
+    for (const column of p.json ?? []) {
+      let heading: string | undefined;
+      for (const w of column ?? []) {
+        if (w.classname === "Heading" && w.text) heading = String(w.text).trim();
+        else if (!w.text && !w.files?.length && !widgetLinks(w).length) navs.push({ w, heading });
+      }
+    }
+    if (!navs.length) return resolved;
+    let pages: PapyrsPageSummary[];
+    try {
+      pages = (await client.allPages()).filter((x) => x.id !== p.id);
+    } catch {
+      return resolved;
+    }
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const asLinks = (list: PapyrsPageSummary[]) => list.slice(0, 40).map((x) => [x.title, x.url] as [string, string]);
+    for (const { w, heading } of navs) {
+      const settings = widgetStrings(w).map(norm);
+      const byId = pages.filter((x) => settings.includes(norm(x.id)));
+      const byFolder = pages.filter((x) => {
+        const c = norm(x.category ?? "");
+        return settings.some((s) => s && (c === s || c.startsWith(s + "/") || c.endsWith("/" + s)));
+      });
+      if (byId.length) resolved.set(w, { links: asLinks(byId), note: "pages it links to" });
+      else if (byFolder.length) resolved.set(w, { links: asLinks(byFolder), note: "pages in its folder" });
+      else if (heading) {
+        // Folders are often named a bit differently from the heading ("User Accounts" vs "General - User Account"):
+        // match a folder segment that contains every word of the heading, ignoring plural "s".
+        const words = (s: string) => norm(s).split(/[^a-z0-9]+/).filter((x) => x.length > 1).map((x) => x.replace(/s$/, ""));
+        const hw = words(heading);
+        const byHeading = hw.length
+          ? pages.filter((x) => (x.category ?? "").split("/").some((seg) => {
+              const sw = words(seg);
+              return hw.every((h) => sw.includes(h));
+            }))
+          : [];
+        if (byHeading.length) resolved.set(w, { links: asLinks(byHeading), note: `likely pages: folder named "${heading}"` });
+      }
+    }
+    return resolved;
   }
 
   // ---------------- READ ----------------
@@ -249,8 +300,9 @@ export function buildServer(env: Env, props: Props): McpServer {
     wrap(async ({ page, subsite }) => {
       const ref = await resolvePage(page, subsite);
       const p = await ref.client.getPage(ref.id);
+      const resolved = await resolveNavigation(p, ref.client);
       return text(
-        `# ${p.title}\nSubsite: ${ref.subsite} | folder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p, (l) => absolute(l, ref.subsite))}`,
+        `# ${p.title}\nSubsite: ${ref.subsite} | folder: ${p.category || "-"} | by ${p.created_by ?? "?"} | updated ${p.updated_at ?? "?"} | ${p.url}\n\n${pageToText(p, (l) => absolute(l, ref.subsite), resolved)}`,
       );
     }),
   );
