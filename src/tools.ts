@@ -402,7 +402,14 @@ export function buildServer(env: Env, props: Props): McpServer {
     wrap(async ({ page, subgroup, subsite }) => {
       const ref = await resolvePage(page, subsite);
       const p = ref.page ?? (await ref.client.getPage(ref.id));
-      if (!p.permissions) return text("Papyrs did not return permissions for this page to your account.");
+      if (!p.permissions) {
+        // Show what Papyrs did return (minus the page content), so the real permissions shape can be seen.
+        const { json, ...meta } = p as unknown as Record<string, unknown>;
+        return text(
+          "Papyrs did not return a 'permissions' field for this page to your account. Page fields returned: " +
+            JSON.stringify(meta).slice(0, 2000),
+        );
+      }
       const people = await papyrs.people();
       const sg = subgroup?.toLowerCase();
       const groups = new Map<string, string[]>();
